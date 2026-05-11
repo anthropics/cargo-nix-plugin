@@ -1,0 +1,6 @@
+/result
+result*
+/rust/target
+/builder/target
+/tests/sample-project/target
+/builder/target

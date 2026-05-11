@@ -1,0 +1,3 @@
+[workspace]
+members = ["sample-bin", "sample-lib"]
+resolver = "2"
