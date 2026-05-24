@@ -632,22 +632,42 @@ in
       # `cargo test`), libtest parallelism inside each. nativeCheckInputs
       # set via crateOverrides are forwarded so tests that shell out to
       # external tools find them on PATH at runtime too.
-      runTests =
-        pkgs.runCommand "${name}-tests"
-          {
-            nativeBuildInputs = testsDrv.nativeCheckInputs;
-            passthru = { inherit testsDrv; };
-          }
-          ''
-            export CARGO_TARGET_TMPDIR="$(mktemp -d)"
-            export RUST_BACKTRACE=''${RUST_BACKTRACE-1}
-            shopt -s nullglob
-            for t in ${testsDrv}/tests/*; do
-              echo "── running $(basename "$t")"
-              "$t"
-            done
-            touch $out
-          '';
+      runTests = pkgs.stdenvNoCC.mkDerivation {
+        name = "${name}-tests";
+
+        inherit (testsDrv)
+          src
+          nativeCheckInputs
+          ;
+
+        dontConfigure = true;
+        dontBuild = true;
+        doCheck = true;
+
+        checkPhase = ''
+          runHook preCheck
+
+          export CARGO_TARGET_TMPDIR="$(mktemp -d)"
+          export RUST_BACKTRACE=''${RUST_BACKTRACE-1}
+          shopt -s nullglob
+          for t in ${testsDrv}/tests/*; do
+            echo "── running $(basename "$t")"
+            "$t"
+          done
+
+          runHook postCheck
+        '';
+
+        installPhase = ''
+          runHook preInstall
+
+          touch $out
+
+          runHook postInstall
+        '';
+
+        passthru = { inherit testsDrv; };
+      };
     }
   ) resolved.workspaceMembers;
 
