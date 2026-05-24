@@ -102,6 +102,12 @@
   # "forbid" matches cargo, which passes no cap for workspace members,
   # so `-D`/`deny`-level lints can fail the build.
   clippyCapLints ? "forbid",
+  # Optional: build clippy crates with all workspace features enabled,
+  # like `cargo clippy --all-features`. Normal build is unaffected, but
+  # dependencies whose feature set grows under all-features are rebuilt
+  # for the clippy path instead of shared with the normal build.
+  # Lockfile-resolve mode only (metadata must be null).
+  clippyAllFeatures ? false,
 
   # Optional: path to Cargo.toml for lockfile resolve. Backwards compat:
   # when set, overrides src-derived manifest path. Lets callers point at
@@ -314,6 +320,39 @@ let
     // lib.optionalAttrs (gitSources' != { }) { gitSources = gitSources'; }
   );
 
+  # Union of all workspace members' features, used as rootFeatures for
+  # the all-features re-resolve. The resolver drops features unknown to
+  # a given member, so the union is safe.
+  allWorkspaceFeatures = lib.unique (
+    lib.concatMap (packageId: lib.attrNames (resolved.crates.${packageId}.features or { })) (
+      lib.attrValues resolved.workspaceMembers
+    )
+  );
+
+  # Re-resolve (rather than just add `--cfg feature=…`) so optional deps
+  # activated by those features actually appear in the dep graph.
+  clippyResolved =
+    if !clippyAllFeatures then
+      resolved
+    else
+      lib.throwIf (metadata != null)
+        ''
+          clippyAllFeatures is only supported in lockfile-resolve mode
+          (omit `metadata`).
+        ''
+        (
+          apiLevelGuard builtins.resolveCargoWorkspace (
+            {
+              target = resolvedTarget;
+              rootFeatures = allWorkspaceFeatures;
+              noDefaultFeatures = false;
+              manifestPath = if manifestPath != null then manifestPath else "${src}/Cargo.toml";
+            }
+            // lib.optionalAttrs (cargoHome != null) { inherit cargoHome; }
+            // lib.optionalAttrs (gitSources' != { }) { gitSources = gitSources'; }
+          )
+        );
+
   # Source resolution: given a crate's source info, produce a src path
   # buildRustCrate always needs a src — for crates-io it uses fetchurl
   # Returns { src, workspace_member ? null }. workspace_member is the subdir
@@ -391,7 +430,9 @@ let
   # Build a crate using buildRustCrate
   # Memoization via the `self` pattern (builtByPackageId)
   mkBuiltByPackageIdByPkgs =
-    cratePkgs:
+    # resolved' is threaded so the clippy path can substitute an
+    # all-features resolution without touching the normal build.
+    resolved': cratePkgs:
     let
       buildRustCrate =
         let
@@ -402,8 +443,8 @@ let
       mkCrates =
         libOnly:
         lib.mapAttrs (
-          packageId: _: buildCrate libOnly self cratePkgs buildRustCrate packageId
-        ) resolved.crates;
+          packageId: _: buildCrate resolved' libOnly self cratePkgs buildRustCrate packageId
+        ) resolved'.crates;
 
       self = {
         # With-bins variant — exposed via workspaceMembers.<name>.build so
@@ -417,15 +458,15 @@ let
         # edges through here — no duplicate work, just different roots.
         cratesLibOnly = mkCrates true;
         target = makeDefaultTarget cratePkgs.stdenv.hostPlatform;
-        build = mkBuiltByPackageIdByPkgs cratePkgs.buildPackages;
+        build = mkBuiltByPackageIdByPkgs resolved' cratePkgs.buildPackages;
       };
     in
     self;
 
   buildCrate =
-    libOnly: self: cratePkgs: buildRustCrate: packageId:
+    resolved': libOnly: self: cratePkgs: buildRustCrate: packageId:
     let
-      crateInfo = resolved.crates.${packageId};
+      crateInfo = resolved'.crates.${packageId};
 
       # Resolve a regular dependency to its built derivation.
       # Proc-macro crates must be built for the build platform since they
@@ -440,7 +481,7 @@ let
       depDrv =
         dep:
         let
-          depCrateInfo = resolved.crates.${dep.packageId} or null;
+          depCrateInfo = resolved'.crates.${dep.packageId} or null;
         in
         if depCrateInfo != null && (depCrateInfo.procMacro or false) then
           self.build.cratesLibOnly.${dep.packageId}
@@ -473,7 +514,7 @@ let
           grouped = lib.groupBy (dep: dep.name) renamedDeps;
           versionAndRename = dep: {
             inherit (dep) rename;
-            version = (resolved.crates.${dep.packageId}).version;
+            version = (resolved'.crates.${dep.packageId}).version;
           };
         in
         lib.mapAttrs (_name: builtins.map versionAndRename) grouped;
@@ -529,7 +570,7 @@ let
       }
     );
 
-  builtCrates = mkBuiltByPackageIdByPkgs pkgs;
+  builtCrates = mkBuiltByPackageIdByPkgs resolved pkgs;
 
   # --- Clippy support ---
   # clippy-driver is a drop-in replacement for rustc.  We build a small
@@ -569,12 +610,13 @@ let
       '';
 
   # Build workspace members under clippy, reusing the normal dependency builds.
-  # Non-workspace crates are taken directly from builtCrates so they are
-  # identical Nix store paths — no redundant rebuilds.
+  # Non-workspace crates are built with plain rustc; unless an all-features
+  # re-resolution changed their feature set, they are the same store paths
+  # as the normal build.
   mkClippyBuiltByPkgs =
-    cratePkgs:
+    resolved': cratePkgs:
     let
-      normalBuilt = mkBuiltByPackageIdByPkgs cratePkgs;
+      normalBuilt = mkBuiltByPackageIdByPkgs resolved' cratePkgs;
 
       # Normal buildRustCrate for dependencies (fully cached)
       normalBuildRustCrate =
@@ -591,7 +633,7 @@ let
           capLints = clippyCapLints;
         };
 
-      workspaceMemberIds = lib.attrValues resolved.workspaceMembers;
+      workspaceMemberIds = lib.attrValues resolved'.workspaceMembers;
 
       # For clippy crate resolution: workspace members use clippy-driver,
       # everything else reuses the already-cached normal build output.
@@ -604,20 +646,20 @@ let
             isWorkspaceMember = lib.elem packageId workspaceMemberIds;
           in
           if isWorkspaceMember then
-            buildCrate false self cratePkgs clippyBuildRustCrate packageId
+            buildCrate resolved' false self cratePkgs clippyBuildRustCrate packageId
           else
             normalBuilt.cratesLibOnly.${packageId}
-        ) resolved.crates;
+        ) resolved'.crates;
         cratesLibOnly = self.crates;
         target = makeDefaultTarget cratePkgs.stdenv.hostPlatform;
         # Build-platform crates use clippy for workspace members too,
         # so build scripts see the same rlib metadata as the lib phase.
-        build = mkClippyBuiltByPkgs cratePkgs.buildPackages;
+        build = mkClippyBuiltByPkgs resolved' cratePkgs.buildPackages;
       };
     in
     self;
 
-  clippyCrates = mkClippyBuiltByPkgs pkgs;
+  clippyCrates = mkClippyBuiltByPkgs clippyResolved pkgs;
 
 in
 {
