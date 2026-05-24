@@ -94,6 +94,10 @@
   extraRegistries ? { },
   # Optional: extra arguments passed to clippy-driver (e.g. ["-D" "warnings"])
   clippyArgs ? [ ],
+  # Optional: `--cap-lints` value for clippy compiles. The default
+  # "forbid" matches cargo, which passes no cap for workspace members,
+  # so `-D`/`deny`-level lints can fail the build.
+  clippyCapLints ? "forbid",
 
   # Optional: path to Cargo.toml for lockfile resolve. Backwards compat:
   # when set, overrides src-derived manifest path. Lets callers point at
@@ -575,14 +579,12 @@ let
         in
         if crateOverrides != null then args: (base args).override { inherit crateOverrides; } else base;
 
-      # Clippy buildRustCrate: use clippy-driver as the compiler. The default
-      # cap-lints=allow neutralises every lint (including -D warnings from
-      # clippyArgs); workspace members get the cargo behaviour of no cap.
+      # Clippy buildRustCrate: use clippy-driver as the compiler.
       clippyBuildRustCrate =
         args:
         (normalBuildRustCrate args).override {
           rust = clippyRustcWrapper;
-          capLints = "warn";
+          capLints = clippyCapLints;
         };
 
       workspaceMemberIds = lib.attrValues resolved.workspaceMembers;
