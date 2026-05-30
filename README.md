@@ -225,6 +225,9 @@ cargoNix.clippy.allWorkspaceMembers
 
 # Check a single member
 cargoNix.clippy.workspaceMembers.my-crate.build
+
+# Collect cached JSON diagnostics from all workspace members
+cargoNix.clippy.report
 ```
 
 To fail on warnings, pass extra clippy flags:
@@ -240,6 +243,12 @@ cargoNix = cargo-nix-plugin.lib {
 Workspace members are built with `--cap-lints forbid` (no effective cap,
 matching cargo). Pass `clippyCapLints = "warn"` to demote all findings to
 warnings instead.
+
+Each clippy member build retains its raw rustc JSON diagnostics at
+`cargoNix.clippy.workspaceMembers.<name>.report`. The aggregate
+`cargoNix.clippy.report` derivation collects those cached diagnostics as one
+`<name>.jsonl` file per workspace member, so CI can publish annotations without
+re-running clippy.
 
 ### How clippy caching works
 

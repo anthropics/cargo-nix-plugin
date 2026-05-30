@@ -90,5 +90,13 @@ pkgs.runCommand "cargo-nix-plugin-sample-build-test"
     nix-store --realize "$clippy_drv" > /dev/null
     echo "PASS: clippy check succeeded"
 
+    clippy_report_drv=$(nix-instantiate \
+      --option plugin-files "${plugin}/lib/nix/plugins" \
+      --expr "($cargoNixExpr).clippy.report")
+
+    clippy_report=$(nix-store --realize "$clippy_report_drv")
+    jq -e -s 'any(.[]; .level == "warning")' "$clippy_report/sample-lib.jsonl" > /dev/null
+    echo "PASS: cached clippy report retained JSON diagnostics"
+
     echo "$out_json" > $out
   ''

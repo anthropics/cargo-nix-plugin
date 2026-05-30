@@ -585,21 +585,27 @@ let
   clippyRustcWrapper =
     let
       inherit (pkgs) clippy rustc;
-      extraArgs = lib.concatMapStringsSep " " lib.escapeShellArg clippyArgs;
+      extraArgs = lib.concatMapStringsSep " " lib.escapeShellArg ([ "--error-format=json" ] ++ clippyArgs);
+      reportingDriver = pkgs.writeShellScript "clippy-driver-with-report" ''
+        if [ -z "''${NIX_BUILD_TOP:-}" ]; then
+          exec ${clippy}/bin/clippy-driver ${extraArgs} "$@"
+        fi
+
+        reportDir="$NIX_BUILD_TOP/clippy-diagnostics"
+        mkdir -p "$reportDir"
+        ${clippy}/bin/clippy-driver ${extraArgs} "$@" \
+          2> >(tee "$reportDir/diagnostics.$$.jsonl" >&2)
+      '';
     in
-    pkgs.runCommand "clippy-as-rustc"
-      {
-        nativeBuildInputs = [ pkgs.makeWrapper ];
-      }
+    pkgs.runCommand "clippy-as-rustc" { }
       ''
         mkdir -p $out/bin $out/lib
         # Symlink the real rustc's libs (sysroot) so clippy-driver finds them
         ln -s ${rustc}/lib/* $out/lib/
 
         # Wrap clippy-driver as "rustc" so buildRustCrate's `noisily rustc`
-        # invocations run clippy instead.
-        makeWrapper ${clippy}/bin/clippy-driver $out/bin/rustc \
-          ${lib.optionalString (clippyArgs != [ ]) ''--add-flags "${extraArgs}"''}
+        # invocations run clippy and retain JSON diagnostics in the build dir.
+        ln -s ${reportingDriver} $out/bin/rustc
 
         # Forward other tools from the real toolchain.
         for tool in rustdoc rustfmt; do
@@ -628,10 +634,20 @@ let
       # Clippy buildRustCrate: use clippy-driver as the compiler.
       clippyBuildRustCrate =
         args:
-        (normalBuildRustCrate args).override {
-          rust = clippyRustcWrapper;
-          capLints = clippyCapLints;
-        };
+        (
+          (normalBuildRustCrate args).override {
+            rust = clippyRustcWrapper;
+            capLints = clippyCapLints;
+          }
+        ).overrideAttrs (old: {
+          postInstall = (old.postInstall or "") + ''
+            mkdir -p "$out/share/cargo-nix"
+            for report in "$NIX_BUILD_TOP"/clippy-diagnostics/*.jsonl; do
+              [ -e "$report" ] || continue
+              cat "$report"
+            done > "$out/share/cargo-nix/clippy-diagnostics.jsonl"
+          '';
+        });
 
       workspaceMemberIds = lib.attrValues resolved'.workspaceMembers;
 
@@ -739,10 +755,16 @@ in
   # compiled normally (cached).  Build any member to get clippy diagnostics;
   # the build fails if clippy reports errors.
   clippy = {
-    workspaceMembers = lib.mapAttrs (name: packageId: {
-      inherit packageId;
-      build = clippyCrates.crates.${packageId};
-    }) resolved.workspaceMembers;
+    workspaceMembers = lib.mapAttrs (
+      name: packageId:
+      let
+        build = clippyCrates.crates.${packageId};
+      in
+      {
+        inherit packageId build;
+        report = "${build}/share/cargo-nix/clippy-diagnostics.jsonl";
+      }
+    ) resolved.workspaceMembers;
 
     allWorkspaceMembers = pkgs.symlinkJoin {
       name = "all-workspace-members-clippy";
@@ -750,6 +772,19 @@ in
         _name: packageId: clippyCrates.crates.${packageId}
       ) resolved.workspaceMembers;
     };
+
+    report = pkgs.runCommand "all-workspace-members-clippy-report" { } ''
+      mkdir -p "$out"
+      ${lib.concatMapStringsSep "\n" (
+        name:
+        let
+          build = clippyCrates.crates.${resolved.workspaceMembers.${name}};
+        in
+        ''
+          cp ${build}/share/cargo-nix/clippy-diagnostics.jsonl "$out/${name}.jsonl"
+        ''
+      ) (lib.attrNames resolved.workspaceMembers)}
+    '';
   };
 
   # Expose internals for debugging

@@ -33,3 +33,8 @@ impl Greeting {
         serde_json::to_string(self).expect("serialize")
     }
 }
+
+#[warn(clippy::useless_format)]
+pub fn formatted_message(message: &str) -> String {
+    format!("{}", message)
+}
