@@ -248,7 +248,14 @@ Each clippy member build retains its raw rustc JSON diagnostics at
 `cargoNix.clippy.workspaceMembers.<name>.report`. The aggregate
 `cargoNix.clippy.report` derivation collects those cached diagnostics as one
 `<name>.jsonl` file per workspace member, so CI can publish annotations without
-re-running clippy.
+re-running clippy. The build log still shows the rendered diagnostics; only the
+on-disk report is JSON.
+
+The report is an output of the clippy build, so it only exists when that build
+succeeds. If you need both the JSON and a failing CI gate, leave `clippyArgs`
+without `-D warnings` and build `cargoNix.clippy.reportCheck` instead — it
+depends on `clippy.report` and fails if any member has warning- or error-level
+findings.
 
 ### How clippy caching works
 

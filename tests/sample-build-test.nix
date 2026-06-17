@@ -98,5 +98,17 @@ pkgs.runCommand "cargo-nix-plugin-sample-build-test"
     jq -e -s 'any(.[]; .level == "warning")' "$clippy_report/sample-lib.jsonl" > /dev/null
     echo "PASS: cached clippy report retained JSON diagnostics"
 
+    # reportCheck must fail because sample-lib carries an intentional
+    # clippy::useless_format warning.
+    clippy_check_drv=$(nix-instantiate \
+      --option plugin-files "${plugin}/lib/nix/plugins" \
+      --expr "($cargoNixExpr).clippy.reportCheck")
+
+    if nix-store --realize "$clippy_check_drv" 2>/dev/null; then
+      echo "FAIL: clippy.reportCheck succeeded despite warnings"
+      exit 1
+    fi
+    echo "PASS: clippy.reportCheck fails on warnings"
+
     echo "$out_json" > $out
   ''

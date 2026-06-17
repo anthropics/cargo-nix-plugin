@@ -584,8 +584,8 @@ let
 
   clippyRustcWrapper =
     let
-      inherit (pkgs) clippy rustc;
-      extraArgs = lib.concatMapStringsSep " " lib.escapeShellArg ([ "--error-format=json" ] ++ clippyArgs);
+      inherit (pkgs) clippy rustc jq;
+      extraArgs = lib.concatMapStringsSep " " lib.escapeShellArg clippyArgs;
       reportingDriver = pkgs.writeShellScript "clippy-driver-with-report" ''
         if [ -z "''${NIX_BUILD_TOP:-}" ]; then
           exec ${clippy}/bin/clippy-driver ${extraArgs} "$@"
@@ -593,8 +593,16 @@ let
 
         reportDir="$NIX_BUILD_TOP/clippy-diagnostics"
         mkdir -p "$reportDir"
-        ${clippy}/bin/clippy-driver ${extraArgs} "$@" \
-          2> >(tee "$reportDir/diagnostics.$$.jsonl" >&2)
+        report="$reportDir/diagnostics.$$.jsonl"
+
+        # Capture JSON diagnostics to disk, then replay rustc's `rendered`
+        # text to stderr so the build log stays human-readable.
+        ${clippy}/bin/clippy-driver --error-format=json ${extraArgs} "$@" 2>"$report"
+        status=$?
+        ${jq}/bin/jq -r 'select(type=="object" and .rendered!=null) | .rendered' \
+          "$report" >&2 2>/dev/null || cat "$report" >&2
+
+        exit $status
       '';
     in
     pkgs.runCommand "clippy-as-rustc" { }
@@ -676,6 +684,19 @@ let
     self;
 
   clippyCrates = mkClippyBuiltByPkgs clippyResolved pkgs;
+
+  clippyReport = pkgs.runCommand "all-workspace-members-clippy-report" { } ''
+    mkdir -p "$out"
+    ${lib.concatMapStringsSep "\n" (
+      name:
+      let
+        build = clippyCrates.crates.${resolved.workspaceMembers.${name}};
+      in
+      ''
+        cp ${build}/share/cargo-nix/clippy-diagnostics.jsonl "$out/${name}.jsonl"
+      ''
+    ) (lib.attrNames resolved.workspaceMembers)}
+  '';
 
 in
 {
@@ -773,18 +794,29 @@ in
       ) resolved.workspaceMembers;
     };
 
-    report = pkgs.runCommand "all-workspace-members-clippy-report" { } ''
-      mkdir -p "$out"
-      ${lib.concatMapStringsSep "\n" (
-        name:
-        let
-          build = clippyCrates.crates.${resolved.workspaceMembers.${name}};
-        in
+    report = clippyReport;
+
+    # Fail iff the cached report contains any diagnostic at warning level
+    # or above.  Intended as a CI gate that reuses `clippy.report` instead
+    # of `clippyArgs = ["-D" "warnings"]`, so the JSON survives for
+    # annotation publishing even when there are findings.
+    reportCheck =
+      pkgs.runCommand "clippy-report-check"
+        {
+          nativeBuildInputs = [ pkgs.jq ];
+        }
         ''
-          cp ${build}/share/cargo-nix/clippy-diagnostics.jsonl "$out/${name}.jsonl"
-        ''
-      ) (lib.attrNames resolved.workspaceMembers)}
-    '';
+          fail=0
+          for f in ${clippyReport}/*.jsonl; do
+            # Ignore the trailing "N warnings emitted" summary (code == null).
+            if jq -e 'select(.code!=null and (.level=="warning" or .level=="error"))' "$f" > /dev/null; then
+              echo "clippy: findings in $(basename "$f")" >&2
+              fail=1
+            fi
+          done
+          [ "$fail" -eq 0 ] || exit 1
+          touch "$out"
+        '';
   };
 
   # Expose internals for debugging
