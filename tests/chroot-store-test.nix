@@ -83,7 +83,9 @@ pkgs.runCommand "cargo-nix-plugin-chroot-store-test"
             };
           in (import ${pluginSrc}/lib {
             inherit pkgs;
-            src = ${sampleProject};
+            # storePath: already nix-copied above; a bare path literal
+            # would re-import it under a second hash.
+            src = builtins.storePath ${sampleProject};
             buildRustCrateForPkgs = _: _: pinnedBuildRustCrate;
           }).workspaceMembers.'"$attr"
     }
