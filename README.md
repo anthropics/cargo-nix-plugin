@@ -236,6 +236,10 @@ cargoNix = cargo-nix-plugin.lib {
 };
 ```
 
+Workspace members are built with `--cap-lints forbid` (no effective cap,
+matching cargo). Pass `clippyCapLints = "warn"` to demote all findings to
+warnings instead.
+
 ### How clippy caching works
 
 `clippy-driver` is a drop-in replacement for `rustc` — it accepts identical
