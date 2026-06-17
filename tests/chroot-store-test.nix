@@ -67,6 +67,7 @@ pkgs.runCommand "cargo-nix-plugin-chroot-store-test"
       local attr=$1; shift
       ${nix}/bin/nix build \
         --store "$CHROOT" \
+        --option sandbox-fallback false \
         --substituters "" \
         --option plugin-files "${plugin}/lib/nix/plugins" \
         --impure --no-link "$@" \
