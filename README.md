@@ -6,12 +6,12 @@ primop.
 
 ## What It Does
 
-- Resolves Cargo workspaces at native speed — directly from `Cargo.lock` and
-  the sparse registry index, no `cargo` binary required (or, optionally, from
-  pre-generated `cargo metadata` JSON)
-- Pre-evaluates `cfg()` target expressions for the requested platform
-- Returns a Nix attrset compatible with `buildRustCrate`
-- Eliminates the `crate2nix generate` step and the 50K-100K line `Cargo.nix`
+- Reads `Cargo.lock` and the sparse registry index directly, so there is no
+  `cargo` binary at eval time (you can also feed it pre-generated
+  `cargo metadata` JSON)
+- Evaluates `cfg()` target expressions for your platform during resolution
+- Produces an attrset that plugs into `buildRustCrate`
+- No more `crate2nix generate` step or checked-in 50K-100K line `Cargo.nix`
 
 ## Install
 
@@ -35,7 +35,7 @@ Or use the flake output:
 
 ### Default (lockfile resolve)
 
-Just point at your workspace root:
+Point at your workspace root:
 
 ```nix
 cargoNix = cargo-nix-plugin.lib {
@@ -47,15 +47,14 @@ cargoNix = cargo-nix-plugin.lib {
 The plugin reads `Cargo.lock` plus the sparse registry index directly — no
 `cargo` binary, no crate sources at eval time. On first use it fetches each
 crate's index entry (a few hundred bytes) into `$CARGO_HOME` and reuses it
-thereafter.
+on later runs.
 
-If your environment already redirects cargo to a mirror, the resolver follows
-the same configuration — `CARGO_REGISTRIES_CRATES_IO_INDEX` or
-`[source.crates-io] replace-with` in `.cargo/config.toml` — so no
-plugin-specific setup is required:
+If you already redirect cargo to a mirror (`CARGO_REGISTRIES_CRATES_IO_INDEX`
+or `[source.crates-io] replace-with` in `.cargo/config.toml`), the resolver
+picks that up too:
 
 ```toml
-# .cargo/config.toml — honoured by both cargo and the plugin
+# .cargo/config.toml — used by both cargo and the plugin
 [source.crates-io]
 replace-with = "mirror"
 [source.mirror]
@@ -63,18 +62,18 @@ registry = "sparse+https://artifactory.example/api/cargo/crates/index/"
 ```
 
 If every index lookup fails (e.g. egress to `index.crates.io` is blocked and
-no mirror is configured), evaluation fails loudly rather than silently
-producing derivations with missing features.
+no mirror is configured), evaluation fails rather than silently producing
+derivations with missing features.
 
 ### Explicit metadata
 
-Alternatively, pre-generate cargo's resolution and pass it in:
+You can also generate cargo's resolution up front and pass it in:
 
 ```bash
 cargo metadata --format-version 1 --locked > metadata.json
 ```
 
-Then pass it explicitly:
+Then:
 
 ```nix
 cargoNix = cargo-nix-plugin.lib {
@@ -85,25 +84,25 @@ cargoNix = cargo-nix-plugin.lib {
 };
 ```
 
-A helper is also available:
+Or use the helper:
 
 ```bash
 nix run .#generate-metadata -- > metadata.json
 ```
 
-### Warming the index cache out of band
+### Pre-fetching the index cache
 
-In the rare case where the evaluating host has *no* reachable index at all,
-`cargo-nix-prefetch` can populate `$CARGO_HOME` ahead of time on a connected
-host (it observes the same mirror precedence as the plugin):
+If the machine doing the evaluation can't reach any index, run
+`cargo-nix-prefetch` on one that can. It fills `$CARGO_HOME` and follows the
+same mirror configuration as the plugin:
 
 ```bash
 nix run .#cargo-nix-prefetch -- --manifest-path ./Cargo.toml
 nix run .#cargo-nix-prefetch -- --manifest-path ./Cargo.toml --check   # verify
 ```
 
-Use `--output DIR` to write into a fresh directory instead of the ambient
-`$CARGO_HOME`, then point the resolver at it explicitly:
+Use `--output DIR` to write to a separate directory instead of `$CARGO_HOME`
+and point the resolver at it:
 
 ```bash
 nix run .#cargo-nix-prefetch -- --manifest-path ./Cargo.toml --output ./.cargo-index
@@ -117,8 +116,8 @@ cargoNix = cargo-nix-plugin.lib {
 };
 ```
 
-The same shape works wrapped in a fixed-output derivation if you want the
-cache pinned by hash rather than checked in.
+You can also wrap this in a fixed-output derivation if you'd rather pin the
+cache by hash than check it in.
 
 ### Git dependencies
 
@@ -155,11 +154,9 @@ pins one.
 
 ### Debug logging
 
-The resolver stays quiet on the happy path so eval output isn't drowned in
-progress noise. Set `CARGO_NIX_DEBUG=1` to surface the informational logs
-(mirror selection, index prefetch timings, per-crate retry attempts) on
-stderr. Warnings about misconfiguration and hard errors are always printed
-regardless of this flag.
+The resolver is quiet by default. Set `CARGO_NIX_DEBUG=1` to get
+informational logs (mirror selection, index prefetch timings, per-crate
+retries) on stderr. Warnings and errors are always printed.
 
 ## Example
 
