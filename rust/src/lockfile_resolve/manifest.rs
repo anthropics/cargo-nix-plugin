@@ -114,6 +114,37 @@ fn parse_workspace_tables(
     (workspace_deps, ws_pkg)
 }
 
+/// Nearest ancestor Cargo.toml with a `[workspace]` table, returning its
+/// `([workspace.dependencies], [workspace.package])`. A path-dep in another
+/// workspace resolves its `{ workspace = true }` entries against that
+/// workspace, not ours; matches cargo's `find_root`. Empty on no match, so
+/// the caller falls through to "bare dep".
+fn find_workspace_for(dir: &Path) -> (HashMap<String, ManifestDep>, WorkspacePackage) {
+    let mut probe = Some(dir);
+    while let Some(d) = probe {
+        let manifest = d.join("Cargo.toml");
+        if let Ok(toml) = read_toml(&manifest) {
+            // A `package.workspace = "..."` pointer wins over the upward
+            // walk (cargo's find_root short-circuits on it).
+            if let Some(ws_ptr) = toml
+                .get("package")
+                .and_then(|p| p.get("workspace"))
+                .and_then(|v| v.as_str())
+            {
+                let ws_root = normalize_path(&d.join(ws_ptr));
+                if let Ok(ws_toml) = read_toml(&ws_root.join("Cargo.toml")) {
+                    return parse_workspace_tables(ws_toml.get("workspace"), &ws_root);
+                }
+            }
+            if let Some(ws) = toml.get("workspace") {
+                return parse_workspace_tables(Some(ws), d);
+            }
+        }
+        probe = d.parent();
+    }
+    (HashMap::new(), WorkspacePackage::default())
+}
+
 /// Parse the workspace root Cargo.toml and all member Cargo.toml files.
 pub(super) fn parse_workspace(workspace_root: &Path) -> Result<WorkspaceManifest, String> {
     let root_toml = read_toml(&workspace_root.join("Cargo.toml"))?;
@@ -216,7 +247,17 @@ pub(super) fn parse_workspace(workspace_root: &Path) -> Result<WorkspaceManifest
         let Some(pkg) = toml.get("package") else {
             continue;
         };
-        let m = parse_member_manifest(&toml, pkg, &dir, &workspace_deps, &ws_pkg)?;
+        // A path-dep in another workspace resolves its `{workspace = true}`
+        // entries against that workspace's tables; find_root them so we can
+        // follow its transitive path deps. In-workspace deps hit our own
+        // tables, so the common case is unchanged.
+        let dep_canon = std::fs::canonicalize(&dir).unwrap_or_else(|_| dir.clone());
+        let (dep_ws_deps, dep_ws_pkg) = if dep_canon.starts_with(workspace_root) {
+            (workspace_deps.clone(), ws_pkg.clone())
+        } else {
+            find_workspace_for(&dir)
+        };
+        let m = parse_member_manifest(&toml, pkg, &dir, &dep_ws_deps, &dep_ws_pkg)?;
         if member_names.contains(m.name.as_str()) || path_deps.contains_key(&m.name) {
             continue;
         }

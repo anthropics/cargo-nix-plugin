@@ -131,6 +131,12 @@
   # checkout fetchGit can't reach (private repo, vendored fixture) or to
   # set `submodules = true` per-source.
   gitSources ? null,
+  # Allow path deps outside the workspace root. Default false: `localSrc`
+  # returns the workspace `src` for every local crate, so an out-of-tree
+  # path-dep would build the wrong directory. Opt in only when supplying
+  # src another way (a `buildRustCrateForPkgs` interceptor keyed on
+  # `args.crateName`; `localSrc` gets relPath="" for these).
+  allowExternalPathDeps ? false,
 }:
 
 let
@@ -294,11 +300,20 @@ let
   defaultBuildRustCrateForPkgs =
     cratePkgs: cratePkgs.callPackage ../nix/build-rust-crate { inherit buildRustCrateBin; };
 
+  # Opt-in host/target split. If the caller's `buildRustCrateForPkgs`
+  # curries an extra `{ isHost ? false }:` arg, supply true for crates
+  # resolved via `cratePkgs.buildPackages` (build scripts, proc-macros,
+  # their closures). Detected via `lib.functionArgs`, so callers without
+  # the arg keep the 2-ary shape and drvPaths. Mirrors crate2nix PR #481.
   effectiveBuildRustCrateForPkgs =
     if buildRustCrateForPkgs != null then
-      cratePkgs: buildRustCrateForPkgs cratePkgs (defaultBuildRustCrateForPkgs cratePkgs)
+      cratePkgs: isHost:
+      let
+        userFn = buildRustCrateForPkgs cratePkgs (defaultBuildRustCrateForPkgs cratePkgs);
+      in
+      if (lib.functionArgs userFn) ? isHost then userFn { inherit isHost; } else userFn
     else
-      defaultBuildRustCrateForPkgs;
+      cratePkgs: _isHost: defaultBuildRustCrateForPkgs cratePkgs;
 
   # Call the plugin builtin — auto-detect mode based on metadata presence
   resolved = apiLevelGuard builtins.resolveCargoWorkspace (
@@ -318,6 +333,7 @@ let
         // lib.optionalAttrs (cargoHome != null) { inherit cargoHome; }
     )
     // lib.optionalAttrs (gitSources' != { }) { gitSources = gitSources'; }
+    // lib.optionalAttrs allowExternalPathDeps { inherit allowExternalPathDeps; }
   );
 
   # Union of all workspace members' features, used as rootFeatures for
@@ -432,11 +448,11 @@ let
   mkBuiltByPackageIdByPkgs =
     # resolved' is threaded so the clippy path can substitute an
     # all-features resolution without touching the normal build.
-    resolved': cratePkgs:
+    resolved': cratePkgs: isHost:
     let
       buildRustCrate =
         let
-          base = effectiveBuildRustCrateForPkgs cratePkgs;
+          base = effectiveBuildRustCrateForPkgs cratePkgs isHost;
         in
         if crateOverrides != null then args: (base args).override { inherit crateOverrides; } else base;
 
@@ -458,7 +474,8 @@ let
         # edges through here — no duplicate work, just different roots.
         cratesLibOnly = mkCrates true;
         target = makeDefaultTarget cratePkgs.stdenv.hostPlatform;
-        build = mkBuiltByPackageIdByPkgs resolved' cratePkgs.buildPackages;
+        # Host graph (build scripts, proc-macros, closures): isHost = true.
+        build = mkBuiltByPackageIdByPkgs resolved' cratePkgs.buildPackages true;
       };
     in
     self;
@@ -570,7 +587,7 @@ let
       }
     );
 
-  builtCrates = mkBuiltByPackageIdByPkgs resolved pkgs;
+  builtCrates = mkBuiltByPackageIdByPkgs resolved pkgs false;
 
   # --- Clippy support ---
   # clippy-driver is a drop-in replacement for rustc.  We build a small
@@ -614,14 +631,14 @@ let
   # re-resolution changed their feature set, they are the same store paths
   # as the normal build.
   mkClippyBuiltByPkgs =
-    resolved': cratePkgs:
+    resolved': cratePkgs: isHost:
     let
-      normalBuilt = mkBuiltByPackageIdByPkgs resolved' cratePkgs;
+      normalBuilt = mkBuiltByPackageIdByPkgs resolved' cratePkgs isHost;
 
       # Normal buildRustCrate for dependencies (fully cached)
       normalBuildRustCrate =
         let
-          base = effectiveBuildRustCrateForPkgs cratePkgs;
+          base = effectiveBuildRustCrateForPkgs cratePkgs isHost;
         in
         if crateOverrides != null then args: (base args).override { inherit crateOverrides; } else base;
 
@@ -654,12 +671,12 @@ let
         target = makeDefaultTarget cratePkgs.stdenv.hostPlatform;
         # Build-platform crates use clippy for workspace members too,
         # so build scripts see the same rlib metadata as the lib phase.
-        build = mkClippyBuiltByPkgs resolved' cratePkgs.buildPackages;
+        build = mkClippyBuiltByPkgs resolved' cratePkgs.buildPackages true;
       };
     in
     self;
 
-  clippyCrates = mkClippyBuiltByPkgs clippyResolved pkgs;
+  clippyCrates = mkClippyBuiltByPkgs clippyResolved pkgs false;
 
 in
 {

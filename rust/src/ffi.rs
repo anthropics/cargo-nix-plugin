@@ -46,6 +46,14 @@ struct PluginInput {
     /// resolver can read each git crate's Cargo.toml without doing IO itself.
     #[serde(default)]
     git_sources: std::collections::HashMap<String, std::path::PathBuf>,
+    /// Allow `path = "..."` dependencies that point OUTSIDE the workspace
+    /// root. Default false (hard error) because the default `localSrc`
+    /// hands back the workspace `src`, so an out-of-tree path-dep would
+    /// silently build against the wrong directory. Opt in only when the
+    /// caller supplies src for those crates some other way (e.g. a
+    /// `buildRustCrateForPkgs` interceptor keyed on crateName).
+    #[serde(default)]
+    allow_external_path_deps: bool,
 }
 
 /// Validate input and resolve the workspace using the appropriate mode.
@@ -99,6 +107,7 @@ fn validate_and_resolve(input: &PluginInput) -> Result<crate::resolve::Workspace
                 &input.root_features,
                 input.no_default_features,
                 &input.git_sources,
+                input.allow_external_path_deps,
             )
         }
     }
@@ -210,6 +219,7 @@ mod tests {
             no_default_features: false,
             cargo_home: None,
             git_sources: Default::default(),
+            allow_external_path_deps: false,
         };
 
         let result = validate_and_resolve(&input).expect("lockfile resolution failed");
