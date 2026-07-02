@@ -601,22 +601,36 @@ let
 
   clippyRustcWrapper =
     let
-      inherit (pkgs) clippy rustc;
+      inherit (pkgs) clippy rustc jq;
       extraArgs = lib.concatMapStringsSep " " lib.escapeShellArg clippyArgs;
+      reportingDriver = pkgs.writeShellScript "clippy-driver-with-report" ''
+        if [ -z "''${NIX_BUILD_TOP:-}" ]; then
+          exec ${clippy}/bin/clippy-driver ${extraArgs} "$@"
+        fi
+
+        reportDir="$NIX_BUILD_TOP/clippy-diagnostics"
+        mkdir -p "$reportDir"
+        report="$reportDir/diagnostics.$$.jsonl"
+
+        # Capture JSON diagnostics to disk, then replay rustc's `rendered`
+        # text to stderr so the build log stays human-readable.
+        ${clippy}/bin/clippy-driver --error-format=json ${extraArgs} "$@" 2>"$report"
+        status=$?
+        ${jq}/bin/jq -r 'select(type=="object" and .rendered!=null) | .rendered' \
+          "$report" >&2 2>/dev/null || cat "$report" >&2
+
+        exit $status
+      '';
     in
-    pkgs.runCommand "clippy-as-rustc"
-      {
-        nativeBuildInputs = [ pkgs.makeWrapper ];
-      }
+    pkgs.runCommand "clippy-as-rustc" { }
       ''
         mkdir -p $out/bin $out/lib
         # Symlink the real rustc's libs (sysroot) so clippy-driver finds them
         ln -s ${rustc}/lib/* $out/lib/
 
         # Wrap clippy-driver as "rustc" so buildRustCrate's `noisily rustc`
-        # invocations run clippy instead.
-        makeWrapper ${clippy}/bin/clippy-driver $out/bin/rustc \
-          ${lib.optionalString (clippyArgs != [ ]) ''--add-flags "${extraArgs}"''}
+        # invocations run clippy and retain JSON diagnostics in the build dir.
+        ln -s ${reportingDriver} $out/bin/rustc
 
         # Forward other tools from the real toolchain.
         for tool in rustdoc rustfmt; do
@@ -645,10 +659,20 @@ let
       # Clippy buildRustCrate: use clippy-driver as the compiler.
       clippyBuildRustCrate =
         args:
-        (normalBuildRustCrate args).override {
-          rust = clippyRustcWrapper;
-          capLints = clippyCapLints;
-        };
+        (
+          (normalBuildRustCrate args).override {
+            rust = clippyRustcWrapper;
+            capLints = clippyCapLints;
+          }
+        ).overrideAttrs (old: {
+          postInstall = (old.postInstall or "") + ''
+            mkdir -p "$out/share/cargo-nix"
+            for report in "$NIX_BUILD_TOP"/clippy-diagnostics/*.jsonl; do
+              [ -e "$report" ] || continue
+              cat "$report"
+            done > "$out/share/cargo-nix/clippy-diagnostics.jsonl"
+          '';
+        });
 
       workspaceMemberIds = lib.attrValues resolved'.workspaceMembers;
 
@@ -677,6 +701,19 @@ let
     self;
 
   clippyCrates = mkClippyBuiltByPkgs clippyResolved pkgs false;
+
+  clippyReport = pkgs.runCommand "all-workspace-members-clippy-report" { } ''
+    mkdir -p "$out"
+    ${lib.concatMapStringsSep "\n" (
+      name:
+      let
+        build = clippyCrates.crates.${resolved.workspaceMembers.${name}};
+      in
+      ''
+        cp ${build}/share/cargo-nix/clippy-diagnostics.jsonl "$out/${name}.jsonl"
+      ''
+    ) (lib.attrNames resolved.workspaceMembers)}
+  '';
 
 in
 {
@@ -756,10 +793,16 @@ in
   # compiled normally (cached).  Build any member to get clippy diagnostics;
   # the build fails if clippy reports errors.
   clippy = {
-    workspaceMembers = lib.mapAttrs (name: packageId: {
-      inherit packageId;
-      build = clippyCrates.crates.${packageId};
-    }) resolved.workspaceMembers;
+    workspaceMembers = lib.mapAttrs (
+      name: packageId:
+      let
+        build = clippyCrates.crates.${packageId};
+      in
+      {
+        inherit packageId build;
+        report = "${build}/share/cargo-nix/clippy-diagnostics.jsonl";
+      }
+    ) resolved.workspaceMembers;
 
     allWorkspaceMembers = pkgs.symlinkJoin {
       name = "all-workspace-members-clippy";
@@ -767,6 +810,30 @@ in
         _name: packageId: clippyCrates.crates.${packageId}
       ) resolved.workspaceMembers;
     };
+
+    report = clippyReport;
+
+    # Fail iff the cached report contains any diagnostic at warning level
+    # or above.  Intended as a CI gate that reuses `clippy.report` instead
+    # of `clippyArgs = ["-D" "warnings"]`, so the JSON survives for
+    # annotation publishing even when there are findings.
+    reportCheck =
+      pkgs.runCommand "clippy-report-check"
+        {
+          nativeBuildInputs = [ pkgs.jq ];
+        }
+        ''
+          fail=0
+          for f in ${clippyReport}/*.jsonl; do
+            # Ignore the trailing "N warnings emitted" summary (code == null).
+            if jq -e 'select(.code!=null and (.level=="warning" or .level=="error"))' "$f" > /dev/null; then
+              echo "clippy: findings in $(basename "$f")" >&2
+              fail=1
+            fi
+          done
+          [ "$fail" -eq 0 ] || exit 1
+          touch "$out"
+        '';
   };
 
   # Expose internals for debugging
