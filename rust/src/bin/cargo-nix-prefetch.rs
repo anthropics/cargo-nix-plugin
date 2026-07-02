@@ -26,6 +26,8 @@
 //!                      [--index URL]
 //!                      [--output DIR | --cargo-home DIR]
 //!                      [--check]
+//!                      [--stats]
+//!                      [--verbose]
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -40,6 +42,8 @@ fn main() -> ExitCode {
     let mut output: Option<PathBuf> = None;
     let mut cargo_home_arg: Option<PathBuf> = None;
     let mut check_only = false;
+    let mut stats = false;        // <-- NEW: --stats flag
+    let mut verbose = false;      // <-- NEW: --verbose flag
 
     while let Some(a) = args.next() {
         match a.as_str() {
@@ -49,6 +53,8 @@ fn main() -> ExitCode {
             "--output" => output = args.next().map(PathBuf::from),
             "--cargo-home" => cargo_home_arg = args.next().map(PathBuf::from),
             "--check" => check_only = true,
+            "--stats" => stats = true,        // <-- NEW
+            "--verbose" => verbose = true,    // <-- NEW
             "-h" | "--help" => {
                 print_usage();
                 return ExitCode::SUCCESS;
@@ -99,6 +105,13 @@ fn main() -> ExitCode {
         .or(cargo_home_arg)
         .unwrap_or_else(|| ambient_cargo_home.clone());
 
+    // --verbose: Print debug information
+    if verbose {
+        eprintln!("[DEBUG] CARGO_HOME: {}", cargo_home.display());
+        eprintln!("[DEBUG] Workspace root: {}", workspace_root.display());
+        eprintln!("[DEBUG] Lockfile: {}", lockfile.display());
+    }
+
     let crates_io_url = registry::resolve_crates_io_index(
         index_override.as_deref(),
         &workspace_root,
@@ -142,6 +155,43 @@ fn main() -> ExitCode {
             eprintln!("  {} {}", j.name, j.version);
         }
         return ExitCode::FAILURE;
+    }
+
+    // --stats: Show cache statistics
+    if stats {
+        let index_dir = cargo_home.join("registry/index");
+        println!("Scanning index cache: {}", index_dir.display());
+        let mut total_files = 0;
+        let mut total_bytes = 0;
+
+        if index_dir.exists() {
+            use walkdir::WalkDir;
+            for entry in WalkDir::new(&index_dir) {
+                let entry = match entry {
+                    Ok(e) => e,
+                    Err(e) => {
+                        eprintln!("error: {e}");
+                        continue;
+                    }
+                };
+                let meta = match entry.metadata() {
+                    Ok(m) => m,
+                    Err(e) => {
+                        eprintln!("error: {e}");
+                        continue;
+                    }
+                };
+                if meta.is_file() {
+                    total_files += 1;
+                    total_bytes += meta.len();
+                }
+            }
+        } else {
+            eprintln!("warning: index directory does not exist");
+        }
+
+        println!("Files: {}", total_files);
+        println!("Total size: {} bytes", total_bytes);
     }
 
     if let Err(e) = std::fs::create_dir_all(&cargo_home) {
@@ -212,6 +262,8 @@ fn print_usage() {
          \x20 --output <DIR>                write cache into a fresh CARGO_HOME-shaped dir\n\
          \x20 --cargo-home <DIR>            cache location (default: $CARGO_HOME or ~/.cargo)\n\
          \x20 --check                       report missing entries; do not fetch\n\
+         \x20 --stats                       show cache statistics (file count, total size)\n\
+         \x20 --verbose                     enable debug output\n\
          \x20 -h, --help                    show this help"
     );
 }

@@ -30,5 +30,6 @@ getrandom = "0.3"
 httpdate = "1"
 # Atomic NamedTempFile-then-persist for cross-process-safe index cache writes.
 tempfile = "3"
+walkdir = "2"
 
 [dev-dependencies]
