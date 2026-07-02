@@ -137,6 +137,11 @@
   # src another way (a `buildRustCrateForPkgs` interceptor keyed on
   # `args.crateName`; `localSrc` gets relPath="" for these).
   allowExternalPathDeps ? false,
+  # Registry crates to force-treat as proc-macros. The sparse index has
+  # no crate-type field, so lockfile-mode resolves them as `procMacro =
+  # false`, mis-routing them into the target graph under an isHost
+  # caller. Default [] leaves drvPaths unchanged.
+  procMacroCrates ? [ ],
 }:
 
 let
@@ -500,7 +505,9 @@ let
         let
           depCrateInfo = resolved'.crates.${dep.packageId} or null;
         in
-        if depCrateInfo != null && (depCrateInfo.procMacro or false) then
+        if depCrateInfo != null
+           && ((depCrateInfo.procMacro or false)
+               || lib.elem depCrateInfo.crateName procMacroCrates) then
           self.build.cratesLibOnly.${dep.packageId}
         else
           self.cratesLibOnly.${dep.packageId};
@@ -551,7 +558,8 @@ let
           crateRenames
           ;
         features = crateInfo.resolvedDefaultFeatures or [ ];
-        procMacro = crateInfo.procMacro or false;
+        procMacro = (crateInfo.procMacro or false)
+                    || lib.elem crateInfo.crateName procMacroCrates;
       }
       # Only ever pass crateBin to *suppress* bins on the lib-only variant.
       # Never forward crateInfo.crateBin: that is only the explicit [[bin]]
