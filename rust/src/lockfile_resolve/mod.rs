@@ -51,6 +51,7 @@ pub fn resolve_from_lockfile(
     root_features: &[String],
     no_default_features: bool,
     git_sources: &HashMap<String, PathBuf>,
+    allow_external_path_deps: bool,
 ) -> Result<WorkspaceResult, String> {
     // 1. Parse Cargo.lock
     let lock_packages = parse_lock_packages(cargo_lock)?;
@@ -252,12 +253,14 @@ pub fn resolve_from_lockfile(
                             workspace_root.display(),
                         )
                     })?;
-                    // Reject paths that escape the workspace src — the drv
-                    // gets `src = <workspace>`, so ../sibling would silently
-                    // build against the wrong directory (or nothing).
+                    // Reject paths escaping the workspace src: the drv gets
+                    // `src = <workspace>`, so ../sibling builds the wrong
+                    // directory. Unless the caller opted in via
+                    // `allowExternalPathDeps` and supplies src itself (a
+                    // `buildRustCrateForPkgs` interceptor by crateName).
                     let dir = std::fs::canonicalize(&member.manifest_dir)
                         .unwrap_or_else(|_| PathBuf::from(&member.manifest_dir));
-                    if !dir.starts_with(&canonical_ws_root) {
+                    if !allow_external_path_deps && !dir.starts_with(&canonical_ws_root) {
                         return Err(format!(
                             "path dependency {} at {} is outside the workspace root {}. \
                              cargo-nix-plugin builds local crates from `src`; a path dep \
@@ -991,6 +994,7 @@ source = "git+https://example.com/repo?branch=main#abc123"
             &[],
             false,
             &git_sources,
+            false,
         )
         .unwrap();
 
@@ -1112,6 +1116,7 @@ version = "0.1.0"
             &[],
             false,
             &HashMap::new(),
+            false,
         )
         .unwrap();
 
@@ -1176,6 +1181,7 @@ version = "0.1.0"
             &[],
             false,
             &HashMap::new(),
+            false,
         )
         .unwrap();
 
@@ -1231,6 +1237,7 @@ version = "0.1.0"
             &[],
             false,
             &HashMap::new(),
+            false,
         )
         .unwrap();
 
@@ -1252,9 +1259,9 @@ version = "0.1.0"
         );
     }
 
-    /// A path dep pointing OUTSIDE the workspace src must fail loudly at
-    /// resolve time. The drv only has `src` in its sandbox; ../sibling
-    /// would otherwise build against nothing and emit artifacts:[].
+    /// A path dep outside the workspace src must fail loudly at resolve
+    /// time: the drv sandbox only has `src`, so ../sibling would build
+    /// nothing and emit artifacts:[].
     #[test]
     fn path_dep_outside_workspace_errors() {
         let tmp = tempfile::tempdir().unwrap();
@@ -1299,6 +1306,7 @@ version = "0.1.0"
             &[],
             false,
             &HashMap::new(),
+            false,
         )
         .unwrap_err();
         assert!(
@@ -1365,6 +1373,7 @@ version = "0.1.0"
             &["shared".into(), "b/only-b".into()],
             true, // noDefaultFeatures — isolate the seeding under test
             &HashMap::new(),
+            false,
         )
         .unwrap();
 
@@ -1393,6 +1402,7 @@ version = "0.1.0"
             &["nope/x".into()],
             false,
             &HashMap::new(),
+            false,
         )
         .unwrap_err();
         assert!(

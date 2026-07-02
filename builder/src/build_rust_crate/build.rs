@@ -122,13 +122,19 @@ pub fn run(config: &mut BuildConfig) -> Result<(), Box<dyn std::error::Error>> {
 
     let bb = BinBuilder { config, flags: &flags, lib_extern: &lib_extern, test_env: &test_env };
 
-    // Bins are always real executables (even under buildTests) so
-    // CARGO_BIN_EXE_<name> resolves; matches cargo's default test set.
+    // Bins are always real executables so CARGO_BIN_EXE_<name> resolves.
     for (name, path) in &bins {
         bb.build(name, path, BinKind::Bin)?;
     }
 
     if config.build_tests {
+        // Also build each bin as a --test harness (under $out/tests/) so
+        // #[test] fns in src/main.rs / src/bin/ run; cargo tests [[bin]]
+        // targets by default. Real bins stay under $out/bin/.
+        // TODO: skip bins with [[bin]] test=false once resolve_bins carries it.
+        for (name, path) in &bins {
+            bb.build(name, path, BinKind::Test { harness: true })?;
+        }
         for (name, path, harness) in resolve_tests(config) {
             bb.build(&name, &path, BinKind::Test { harness })?;
         }
