@@ -34,6 +34,13 @@ struct PluginInput {
     /// Features to enable on the root package.
     #[serde(default)]
     root_features: Vec<String>,
+    /// Workspace members to seed feature resolution from (lockfile mode
+    /// only). `None` seeds every member (`cargo build --workspace`
+    /// semantics — shared deps get the union of all members' features);
+    /// `Some` seeds only the named members (`cargo build -p …`), and the
+    /// result's workspaceMembers is restricted to them.
+    #[serde(default)]
+    root_packages: Option<Vec<String>>,
     /// Disable default features on root packages.
     #[serde(default)]
     no_default_features: bool,
@@ -69,6 +76,12 @@ fn validate_and_resolve(input: &PluginInput) -> Result<crate::resolve::Workspace
         ),
         // Mode 1: explicit cargo metadata JSON
         (Some(metadata), None) => {
+            if input.root_packages.is_some() {
+                return Err("'rootPackages' requires lockfile mode (manifestPath): \
+                     explicit cargo-metadata mode carries cargo's own feature \
+                     resolution."
+                    .to_string());
+            }
             let cargo_lock = input
                 .cargo_lock
                 .as_deref()
@@ -105,6 +118,7 @@ fn validate_and_resolve(input: &PluginInput) -> Result<crate::resolve::Workspace
                 &crates_io_index,
                 &input.target,
                 &input.root_features,
+                input.root_packages.as_deref(),
                 input.no_default_features,
                 &input.git_sources,
                 input.allow_external_path_deps,
@@ -216,6 +230,7 @@ mod tests {
             manifest_path: Some(manifest_path.to_string()),
             target: linux_x86_64(),
             root_features: vec![],
+            root_packages: None,
             no_default_features: false,
             cargo_home: None,
             git_sources: Default::default(),

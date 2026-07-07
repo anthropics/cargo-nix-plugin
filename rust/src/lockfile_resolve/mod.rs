@@ -49,6 +49,7 @@ pub fn resolve_from_lockfile(
     crates_io_index: &str,
     target: &TargetDescription,
     root_features: &[String],
+    root_packages: Option<&[String]>,
     no_default_features: bool,
     git_sources: &HashMap<String, PathBuf>,
     allow_external_path_deps: bool,
@@ -390,6 +391,41 @@ pub fn resolve_from_lockfile(
             None => bare.push(entry.clone()),
         }
     }
+    // rootPackages restricts resolution to the named members' dependency
+    // trees (`cargo build -p …` semantics). Without it every member seeds,
+    // so shared deps resolve to the union of all members' features
+    // (`cargo build --workspace`). Narrowing workspace_members here means
+    // everything downstream — seeding, the exported member set, and the
+    // root-crate check — sees only the seeded members.
+    if let Some(roots) = root_packages {
+        if roots.is_empty() {
+            return Err(
+                "rootPackages: empty list; pass null (or omit it) to seed every \
+                 workspace member."
+                    .to_string(),
+            );
+        }
+        let mut names = std::collections::BTreeSet::new();
+        for r in roots {
+            if !workspace_members.contains_key(r.as_str()) {
+                return Err(format!(
+                    "rootPackages entry {r:?} is not a workspace member."
+                ));
+            }
+            names.insert(r.as_str());
+        }
+        for (pkg, feats) in &scoped {
+            if !names.contains(pkg) {
+                return Err(format!(
+                    "rootFeatures entry \"{pkg}/{feat}\": {pkg:?} is not in rootPackages, \
+                     so the scoped feature would be silently dropped. Add {pkg:?} to \
+                     rootPackages or drop the entry.",
+                    feat = feats[0],
+                ));
+            }
+        }
+        workspace_members.retain(|name, _| names.contains(name.as_str()));
+    }
     let root_packages: Vec<(String, Vec<String>)> = workspace_members
         .iter()
         .map(|(name, pkg_id)| {
@@ -433,10 +469,13 @@ pub fn resolve_from_lockfile(
         info.dev_dependencies.retain(&keep);
     }
 
-    // Determine root
+    // Determine root. Under rootPackages a non-seeded root package has
+    // unresolved features (and all optional deps pruned), so exposing it
+    // as `root` would let rootCrate silently build wrong — drop it.
     let root = workspace
         .root_package
         .as_ref()
+        .filter(|p| workspace_members.contains_key(p.name.as_str()))
         .map(|p| short_id.get(&p.name, &p.version));
 
     Ok(WorkspaceResult {
@@ -992,6 +1031,7 @@ source = "git+https://example.com/repo?branch=main#abc123"
             "sparse+https://index.crates.io/",
             &target,
             &[],
+            None,
             false,
             &git_sources,
             false,
@@ -1114,6 +1154,7 @@ version = "0.1.0"
             "sparse+https://index.crates.io/",
             &target,
             &[],
+            None,
             false,
             &HashMap::new(),
             false,
@@ -1179,6 +1220,7 @@ version = "0.1.0"
             "sparse+https://index.crates.io/",
             &linux_target(),
             &[],
+            None,
             false,
             &HashMap::new(),
             false,
@@ -1235,6 +1277,7 @@ version = "0.1.0"
             "sparse+https://index.crates.io/",
             &linux_target(),
             &[],
+            None,
             false,
             &HashMap::new(),
             false,
@@ -1304,6 +1347,7 @@ version = "0.1.0"
             "sparse+https://index.crates.io/",
             &linux_target(),
             &[],
+            None,
             false,
             &HashMap::new(),
             false,
@@ -1371,6 +1415,7 @@ version = "0.1.0"
             "sparse+https://index.crates.io/",
             &linux_target(),
             &["shared".into(), "b/only-b".into()],
+            None,
             true, // noDefaultFeatures — isolate the seeding under test
             &HashMap::new(),
             false,
@@ -1384,6 +1429,216 @@ version = "0.1.0"
         // bare "shared" reaches both; scoped "b/only-b" reaches b only.
         assert_eq!(a, vec!["shared"], "a got: {a:?}");
         assert_eq!(b, vec!["only-b", "shared"], "b got: {b:?}");
+    }
+
+    /// Shared workspace fixture for the rootPackages tests: members `a` and
+    /// `b` both path-depend on `c`; only `b` activates `c`'s "extra"
+    /// feature. Whole-workspace seeding unions "extra" into `c`; seeding
+    /// from `a` alone must not.
+    fn root_packages_fixture(tmp: &std::path::Path) -> String {
+        for d in ["a/src", "b/src", "c/src"] {
+            std::fs::create_dir_all(tmp.join(d)).unwrap();
+        }
+        std::fs::write(
+            tmp.join("Cargo.toml"),
+            "[workspace]\nmembers = [\"a\", \"b\", \"c\"]\n",
+        )
+        .unwrap();
+        std::fs::write(
+            tmp.join("a/Cargo.toml"),
+            "[package]\nname = \"a\"\nversion = \"0.1.0\"\n[dependencies]\nc = { path = \"../c\" }\n",
+        )
+        .unwrap();
+        std::fs::write(
+            tmp.join("b/Cargo.toml"),
+            "[package]\nname = \"b\"\nversion = \"0.1.0\"\n[dependencies]\nc = { path = \"../c\", features = [\"extra\"] }\n",
+        )
+        .unwrap();
+        std::fs::write(
+            tmp.join("c/Cargo.toml"),
+            "[package]\nname = \"c\"\nversion = \"0.1.0\"\n[features]\nextra = []\n",
+        )
+        .unwrap();
+        r#"
+version = 4
+[[package]]
+name = "a"
+version = "0.1.0"
+dependencies = ["c"]
+[[package]]
+name = "b"
+version = "0.1.0"
+dependencies = ["c"]
+[[package]]
+name = "c"
+version = "0.1.0"
+"#
+        .to_string()
+    }
+
+    /// rootPackages narrows seeding to the named members' dep trees:
+    /// another member's dependency-declared features must not leak into a
+    /// shared dep (the workspace-unification behavior this option exists
+    /// to switch off).
+    #[test]
+    fn root_packages_narrows_shared_dep_features() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path();
+        let cargo_lock = root_packages_fixture(ws);
+
+        let run = |roots: Option<&[String]>| {
+            resolve_from_lockfile(
+                ws,
+                &cargo_lock,
+                ws,
+                "sparse+https://index.crates.io/",
+                &linux_target(),
+                &[],
+                roots,
+                false,
+                &HashMap::new(),
+                false,
+            )
+            .unwrap()
+        };
+
+        let whole = run(None);
+        assert!(
+            whole.crates["c"]
+                .resolved_default_features
+                .contains(&"extra".to_string()),
+            "workspace-wide seeding must union b's dep features into c"
+        );
+
+        let narrowed = run(Some(&["a".to_string()]));
+        assert!(
+            !narrowed.crates["c"]
+                .resolved_default_features
+                .contains(&"extra".to_string()),
+            "seeding from a alone must not activate b's dep features on c; got {:?}",
+            narrowed.crates["c"].resolved_default_features
+        );
+        // Only the seeded root is exported: non-seeded members have
+        // unresolved features and must not be silently buildable.
+        assert!(narrowed.workspace_members.contains_key("a"));
+        assert!(!narrowed.workspace_members.contains_key("b"));
+    }
+
+    #[test]
+    fn root_packages_unknown_member_errors() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path();
+        let cargo_lock = root_packages_fixture(ws);
+        let err = resolve_from_lockfile(
+            ws,
+            &cargo_lock,
+            ws,
+            "sparse+https://index.crates.io/",
+            &linux_target(),
+            &[],
+            Some(&["nope".to_string()]),
+            false,
+            &HashMap::new(),
+            false,
+        )
+        .unwrap_err();
+        assert!(err.contains("not a workspace member"), "got: {err}");
+
+        let err = resolve_from_lockfile(
+            ws,
+            &cargo_lock,
+            ws,
+            "sparse+https://index.crates.io/",
+            &linux_target(),
+            &[],
+            Some(&[]),
+            false,
+            &HashMap::new(),
+            false,
+        )
+        .unwrap_err();
+        assert!(err.contains("empty list"), "got: {err}");
+    }
+
+    /// A package-scoped rootFeatures entry for a member outside
+    /// rootPackages would be seeded on nothing — error instead of
+    /// silently dropping it.
+    #[test]
+    fn root_packages_scoped_feature_outside_roots_errors() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path();
+        let cargo_lock = root_packages_fixture(ws);
+        let err = resolve_from_lockfile(
+            ws,
+            &cargo_lock,
+            ws,
+            "sparse+https://index.crates.io/",
+            &linux_target(),
+            &["b/whatever".to_string()],
+            Some(&["a".to_string()]),
+            false,
+            &HashMap::new(),
+            false,
+        )
+        .unwrap_err();
+        assert!(err.contains("not in rootPackages"), "got: {err}");
+    }
+
+    /// A root-package workspace where rootPackages excludes the root: the
+    /// root crate has unresolved features, so `root` must be dropped
+    /// rather than exposed as a silently wrong-featured rootCrate.
+    #[test]
+    fn root_packages_excluding_root_package_drops_root() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path();
+        for d in ["src", "tool/src"] {
+            std::fs::create_dir_all(ws.join(d)).unwrap();
+        }
+        std::fs::write(
+            ws.join("Cargo.toml"),
+            "[package]\nname = \"app\"\nversion = \"0.1.0\"\n[workspace]\nmembers = [\"tool\"]\n",
+        )
+        .unwrap();
+        std::fs::write(
+            ws.join("tool/Cargo.toml"),
+            "[package]\nname = \"tool\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+        let cargo_lock = r#"
+version = 4
+[[package]]
+name = "app"
+version = "0.1.0"
+[[package]]
+name = "tool"
+version = "0.1.0"
+"#;
+        let run = |roots: Option<&[String]>| {
+            resolve_from_lockfile(
+                ws,
+                cargo_lock,
+                ws,
+                "sparse+https://index.crates.io/",
+                &linux_target(),
+                &[],
+                roots,
+                false,
+                &HashMap::new(),
+                false,
+            )
+            .unwrap()
+        };
+        assert_eq!(run(None).root.as_deref(), Some("app"));
+        let narrowed = run(Some(&["tool".to_string()]));
+        assert_eq!(
+            narrowed.root, None,
+            "excluded root package must not be exposed"
+        );
+        assert_eq!(
+            run(Some(&["app".to_string()])).root.as_deref(),
+            Some("app"),
+            "seeded root package keeps root"
+        );
     }
 
     /// `rootFeatures = ["pkg/feat"]` where `pkg` is not a workspace member
@@ -1400,6 +1655,7 @@ version = "0.1.0"
             "sparse+https://index.crates.io/",
             &linux_target(),
             &["nope/x".into()],
+            None,
             false,
             &HashMap::new(),
             false,

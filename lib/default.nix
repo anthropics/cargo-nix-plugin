@@ -54,6 +54,12 @@
   # `cargo build --workspace --features member/feat`). An unknown member
   # name fails evaluation.
   rootFeatures ? [ ],
+  # Workspace members to seed feature resolution from (lockfile mode only).
+  # null seeds every member (`cargo build --workspace`: shared deps get the
+  # union of all members' features); a list seeds only those members
+  # (`cargo build -p ...`) and restricts workspaceMembers to them.
+  # Requires resolver API level >= 3.
+  rootPackages ? null,
   # Optional: disable default features on root packages.
   noDefaultFeatures ? false,
 
@@ -145,24 +151,28 @@
 }:
 
 let
-  # Contract version between this wrapper and the Rust resolver (input
-  # attrset + WorkspaceResult). Must match API_LEVEL in
-  # rust/src/resolve.rs; bump both on incompatible changes.
-  apiLevel = 2;
+  # Minimum resolver contract this wrapper requires (input attrset +
+  # WorkspaceResult shape). Matches API_LEVEL in rust/src/resolve.rs at
+  # the revision that introduced the last incompatible change; purely
+  # additive resolver changes (new optional inputs) bump API_LEVEL but
+  # not this minimum — their guards live next to the feature (see
+  # rootPackages below), so callers not using them never see skew noise
+  # during a rollout window.
+  minApiLevel = 2;
+  minApiLevelForRootPackages = 3;
 
   # Probe the loaded plugin before calling it so skew surfaces as a
   # clear message, not a serde/attr error. `or 0` covers plugins
-  # predating the primop. Warn-only until the first real bump.
+  # predating the primop.
   resolverApiLevel = builtins.cargoNixApiLevel or 0;
   apiLevelGuard =
-    if resolverApiLevel == apiLevel then
+    if resolverApiLevel >= minApiLevel then
       x: x
     else
       lib.warn ''
-        cargo-nix-plugin: API level mismatch.
-          nix builtin resolver = ${toString resolverApiLevel}
-          lib/default.nix      = ${toString apiLevel}
-        Your nix was built against a different cargo-nix-plugin revision
+        cargo-nix-plugin: resolver API level ${toString resolverApiLevel}
+        is older than this lib/ requires (${toString minApiLevel}).
+        Your nix was built against an older cargo-nix-plugin revision
         than the lib/ you are evaluating. Rebuild/reload the plugin
         against this checkout.
       '';
@@ -321,11 +331,26 @@ let
       cratePkgs: _isHost: defaultBuildRustCrateForPkgs cratePkgs;
 
   # Call the plugin builtin — auto-detect mode based on metadata presence
-  resolved = apiLevelGuard builtins.resolveCargoWorkspace (
+  # rootPackages on an older resolver would be silently ignored (serde
+  # drops unknown fields), yielding the unified-features build the caller
+  # explicitly asked to avoid — hard error instead.
+  resolved =
+    lib.throwIf (rootPackages != null && resolverApiLevel < minApiLevelForRootPackages)
+      ''
+        cargo-nix-plugin: rootPackages requires resolver API level >= ${toString minApiLevelForRootPackages}
+        (loaded nix has ${toString resolverApiLevel}). Rebuild/reload the
+        nix that embeds the resolver against this checkout.
+      ''
+      (
+        lib.throwIf (rootPackages != null && metadata != null) ''
+          rootPackages is only supported in lockfile-resolve mode (omit `metadata`).
+        ''
+        (apiLevelGuard builtins.resolveCargoWorkspace (
     {
       target = resolvedTarget;
       inherit rootFeatures noDefaultFeatures;
     }
+    // lib.optionalAttrs (rootPackages != null) { inherit rootPackages; }
     // (
       if metadata != null then
         {
@@ -339,7 +364,7 @@ let
     )
     // lib.optionalAttrs (gitSources' != { }) { gitSources = gitSources'; }
     // lib.optionalAttrs allowExternalPathDeps { inherit allowExternalPathDeps; }
-  );
+  )));
 
   # Union of all workspace members' features, used as rootFeatures for
   # the all-features re-resolve. The resolver drops features unknown to
@@ -367,6 +392,9 @@ let
               target = resolvedTarget;
               rootFeatures = allWorkspaceFeatures;
               noDefaultFeatures = false;
+            }
+            // lib.optionalAttrs (rootPackages != null) { inherit rootPackages; }
+            // {
               manifestPath = if manifestPath != null then manifestPath else "${src}/Cargo.toml";
             }
             // lib.optionalAttrs (cargoHome != null) { inherit cargoHome; }
@@ -847,7 +875,8 @@ in
   # Expose internals for debugging
   inherit resolved;
   inherit builtCrates;
-  # apiLevel = this lib/, resolverApiLevel = loaded plugin (0 if
+  # minApiLevel = this lib/'s floor, resolverApiLevel = loaded plugin (0 if
   # unknown). Lets callers hard-assert instead of relying on the warn.
-  inherit apiLevel resolverApiLevel;
+  apiLevel = minApiLevel;
+  inherit minApiLevel resolverApiLevel;
 }

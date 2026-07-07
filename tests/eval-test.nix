@@ -27,6 +27,20 @@ let
     rootFeatures = [ "default" ];
   };
 
+  # Lockfile-mode resolves over the root-packages-workspace fixture:
+  # members a and b share path-dep c; only b activates c's "extra".
+  rpManifest = builtins.toString (fixtures + "/root-packages-workspace/Cargo.toml");
+  rpWhole = builtins.resolveCargoWorkspace {
+    inherit target;
+    manifestPath = rpManifest;
+  };
+  rpNarrowed = builtins.resolveCargoWorkspace {
+    inherit target;
+    manifestPath = rpManifest;
+    rootPackages = [ "a" ];
+  };
+  rpFeatures = r: (r.crates.c or { }).resolvedDefaultFeatures or [ ];
+
   crateCount = builtins.length (builtins.attrNames result.crates);
   memberCount = builtins.length (builtins.attrNames result.workspaceMembers);
 
@@ -88,6 +102,26 @@ let
       name = "external-crate-no-dev-deps";
       ok = builtins.length externalWithDevDeps == 0;
       msg = "external crates should have no devDependencies, found ${toString (builtins.length externalWithDevDeps)} with dev deps";
+    }
+    {
+      # Whole-workspace seeding unions b's dep features into shared c.
+      name = "root-packages-union-baseline";
+      ok = builtins.elem "extra" (rpFeatures rpWhole);
+      msg = "expected c to carry \"extra\" under whole-workspace seeding, got ${builtins.toJSON (rpFeatures rpWhole)}";
+    }
+    {
+      # rootPackages = ["a"] must not inherit b's dep features on c.
+      name = "root-packages-narrows";
+      ok = !(builtins.elem "extra" (rpFeatures rpNarrowed));
+      msg = "rootPackages [\"a\"] leaked b's feature onto c: ${builtins.toJSON (rpFeatures rpNarrowed)}";
+    }
+    {
+      # Non-seeded members must not be exported as buildable.
+      name = "root-packages-members-filtered";
+      ok =
+        (rpNarrowed.workspaceMembers ? a) && !(rpNarrowed.workspaceMembers ? b)
+        && (rpWhole.workspaceMembers ? b);
+      msg = "workspaceMembers filtering wrong: narrowed=${builtins.toJSON (builtins.attrNames rpNarrowed.workspaceMembers)}";
     }
   ];
 

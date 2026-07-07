@@ -19,7 +19,7 @@ use crate::lockfile::parse_lockfile;
 /// `resolved.apiLevel == apiLevel`, so consumers that statically link an
 /// older resolver into nix but evaluate a newer `lib/` get a clear error
 /// instead of a confusing attribute-missing failure deep in buildRustCrate.
-pub const API_LEVEL: u32 = 2;
+pub const API_LEVEL: u32 = 3;
 
 /// The result of resolving a cargo workspace.
 #[derive(Debug, Serialize, Deserialize)]
