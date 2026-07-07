@@ -124,6 +124,8 @@ static RegisterPrimOp rp(PrimOp {
       - `cargoLock`: Contents of `Cargo.lock`
       - `target`: Attrset describing the target platform
       - `rootFeatures` (optional): List of features to enable (defaults to `["default"]`)
+      - `rootPackages` (optional): Workspace members to seed feature resolution from
+        (lockfile mode only; default = all members)
     )",
 #ifdef NIX_PRIMOP_HAS_IMPL
     .impl = prim_resolveCargoWorkspace,

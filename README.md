@@ -65,6 +65,31 @@ If every index lookup fails (e.g. egress to `index.crates.io` is blocked and
 no mirror is configured), evaluation fails rather than silently producing
 derivations with missing features.
 
+### Per-package feature resolution (`rootPackages`)
+
+By default every workspace member seeds feature resolution, so shared
+dependencies get the **union** of all members' features — `cargo build
+--workspace` semantics. To build one binary without inheriting features
+from unrelated members (`cargo build -p my-service` semantics), name the
+members to seed from:
+
+```nix
+cargoNix = cargo-nix-plugin.lib {
+  inherit pkgs;
+  src = ./.;
+  rootPackages = [ "my-service" ];  # lockfile mode only
+};
+cargoNix.workspaceMembers.my-service.build
+```
+
+`workspaceMembers` (and `rootCrate`, if the workspace root package isn't
+listed) is restricted to the named members — a non-seeded member has
+unresolved features, so building it would be silently wrong. Unknown
+member names, an empty list, and scoped `rootFeatures` entries
+(`"member/feat"`) naming a member outside `rootPackages` are hard errors.
+Requires a resolver at API level 3+; older resolvers fail evaluation
+rather than silently ignoring the option.
+
 ### Explicit metadata
 
 You can also generate cargo's resolution up front and pass it in:
