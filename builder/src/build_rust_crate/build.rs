@@ -77,10 +77,10 @@ pub fn run(config: &mut BuildConfig) -> Result<(), Box<dyn std::error::Error>> {
                 config.reusable_root_lib
             )
         })?;
-        if root.lib_name != crate_name || root.metadata != *metadata {
+        if root.lib_name != crate_name {
             return Err(format!(
-                "reusable root lib mismatch for {}: expected {crate_name}-{metadata}, got {}-{}",
-                config.crate_name, root.lib_name, root.metadata
+                "reusable root lib mismatch for {}: expected library {crate_name}, got {}",
+                config.crate_name, root.lib_name
             )
             .into());
         }
