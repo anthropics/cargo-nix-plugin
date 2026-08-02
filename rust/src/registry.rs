@@ -93,9 +93,7 @@ pub fn resolve_crates_io_index(
 pub fn source_to_index_url(source: Option<&str>, crates_io_index: &str) -> Option<String> {
     const CRATES_IO_GIT: &str = "registry+https://github.com/rust-lang/crates.io-index";
     match source? {
-        s if s == CRATES_IO_GIT || s.contains("index.crates.io") => {
-            Some(crates_io_index.to_string())
-        }
+        CRATES_IO_GIT | CRATES_IO_SPARSE_URL => Some(crates_io_index.to_string()),
         s if s.starts_with("sparse+") || s.starts_with("registry+") => Some(normalize_index_url(s)),
         _ => None,
     }
@@ -1062,6 +1060,20 @@ mod tests {
         assert_eq!(
             source_to_index_url(Some("registry+https://other.example/index"), mirror),
             Some("sparse+https://other.example/index/".into())
+        );
+        assert_eq!(
+            source_to_index_url(
+                Some("sparse+https://index.crates.io.example/private"),
+                mirror
+            ),
+            Some("sparse+https://index.crates.io.example/private/".into())
+        );
+        assert_eq!(
+            source_to_index_url(
+                Some("sparse+https://registry.example/index.crates.io"),
+                mirror
+            ),
+            Some("sparse+https://registry.example/index.crates.io/".into())
         );
         // Non-registry sources → None.
         assert_eq!(
