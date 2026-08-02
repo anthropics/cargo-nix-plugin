@@ -5,7 +5,7 @@ use std::fs;
 use std::os::unix::fs::{PermissionsExt, symlink};
 use std::path::Path;
 
-use super::config::{BuildConfig, CrateMetadata};
+use super::config::{BuildConfig, CrateMetadata, TerminalArtifacts};
 use super::configure::detect_cargo_toml_info;
 
 pub fn run(config: &mut BuildConfig) -> Result<(), Box<dyn std::error::Error>> {
@@ -13,13 +13,18 @@ pub fn run(config: &mut BuildConfig) -> Result<(), Box<dyn std::error::Error>> {
 
     let metadata = &config.metadata;
     let out = config.out_path();
+    fs::create_dir_all(out)?;
+
+    if config.terminal_artifacts != TerminalArtifacts::Install {
+        return write_verdict(config);
+    }
 
     if config.build_tests {
-        return install_tests(config);
+        install_tests(config)?;
+        return write_verdict(config);
     }
 
     let lib_out = config.lib_path_output().unwrap_or(out);
-    fs::create_dir_all(out)?;
     fs::create_dir_all(lib_out)?;
 
     // Copy link flags for downstream crates
@@ -110,6 +115,42 @@ pub fn run(config: &mut BuildConfig) -> Result<(), Box<dyn std::error::Error>> {
         copy_tree("target/bin", &dst)?;
     }
 
+    write_verdict(config)
+}
+
+/// Record successful completion and direct effective dependency references.
+/// Nix follows those direct outputs transitively; flattening the graph here
+/// would duplicate dependency resolution and retain more than necessary.
+fn write_verdict(config: &BuildConfig) -> Result<(), Box<dyn std::error::Error>> {
+    let support = format!("{}/nix-support", config.out_path());
+    fs::create_dir_all(&support)?;
+    fs::write(
+        format!("{support}/cargo-nix-build-complete"),
+        format!("{}\n", config.terminal_artifacts.as_str()),
+    )?;
+
+    let mut paths = config.dependency_closure_paths.clone();
+    paths.sort();
+    paths.dedup();
+    let references = if paths.is_empty() {
+        String::new()
+    } else {
+        format!("{}\n", paths.join("\n"))
+    };
+    let closure_output =
+        if config.terminal_artifacts == TerminalArtifacts::Install && !config.build_tests {
+            config
+                .lib_path_output()
+                .unwrap_or_else(|| config.out_path())
+        } else {
+            config.out_path()
+        };
+    let closure_support = format!("{closure_output}/nix-support");
+    fs::create_dir_all(&closure_support)?;
+    fs::write(
+        format!("{closure_support}/rust-dependency-closure"),
+        references,
+    )?;
     Ok(())
 }
 

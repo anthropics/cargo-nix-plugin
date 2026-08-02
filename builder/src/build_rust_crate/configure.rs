@@ -141,9 +141,8 @@ pub fn run(config: &mut BuildConfig) -> Result<(), Box<dyn std::error::Error>> {
 
         if config.release {
             cmd.args(["-C", "opt-level=3"]);
-        } else {
-            cmd.args(["-C", "debuginfo=2"]);
         }
+        cmd.args(["-C", &format!("debuginfo={}", config.debug_info)]);
         cmd.args([
             "-C",
             &format!("codegen-units={n}", n = config.codegen_units),

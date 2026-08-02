@@ -48,6 +48,8 @@ pub struct BuildConfig {
     pub verbose: bool,
     #[serde(default)]
     pub build_tests: bool,
+    pub debug_info: u8,
+    pub terminal_artifacts: TerminalArtifacts,
     #[serde(default = "default_codegen_units")]
     pub codegen_units: u32,
     #[serde(default)]
@@ -76,6 +78,9 @@ pub struct BuildConfig {
     pub dep_externs: Vec<DepExtern>,
     #[serde(default)]
     pub build_dep_externs: Vec<DepExtern>,
+    /// Direct effective dependency outputs retained by terminal verdicts.
+    #[serde(default)]
+    pub dependency_closure_paths: Vec<String>,
 
     pub host_platform: PlatformInfo,
     pub build_platform: PlatformInfo,
@@ -113,6 +118,24 @@ fn default_cap_lints() -> String {
 }
 fn default_colors() -> String {
     "always".into()
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TerminalArtifacts {
+    Install,
+    Discard,
+    Metadata,
+}
+
+impl TerminalArtifacts {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Install => "install",
+            Self::Discard => "discard",
+            Self::Metadata => "metadata",
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -265,6 +288,16 @@ impl BuildConfig {
     pub fn from_json_file(path: &str) -> Result<Self, Box<dyn std::error::Error>> {
         let content = std::fs::read_to_string(path)?;
         let config: Self = serde_json::from_str(&content)?;
+        if config.debug_info > 2 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!(
+                    "debugInfo must be from 0 through 2, got {}",
+                    config.debug_info
+                ),
+            )
+            .into());
+        }
 
         // Export ALL_CAPS attrs as env vars: __structuredAttrs puts them in JSON
         // but overrides like `OPENSSL_NO_VENDOR = 1;` expect them in the env.

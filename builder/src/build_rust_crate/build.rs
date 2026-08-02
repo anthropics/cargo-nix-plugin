@@ -4,7 +4,7 @@
 use std::fs;
 use std::path::Path;
 
-use super::config::{BuildConfig, CrateMetadata};
+use super::config::{BuildConfig, CrateMetadata, TerminalArtifacts};
 use super::configure::{BuildScriptOutputs, build_env, detect_cargo_toml_info};
 use super::rustc::RustcFlags;
 use super::util::{echo_colored, remove_object_files, run_cmd, set_var};
@@ -44,7 +44,7 @@ pub fn run(config: &mut BuildConfig) -> Result<(), Box<dyn std::error::Error>> {
     // construct `--extern` args. `install` overwrites with the scanned
     // `target/lib` artifact set. Under plain nix-build the early write is
     // unobservable (dependents only start after install).
-    if !config.build_tests {
+    if !config.build_tests && config.terminal_artifacts == TerminalArtifacts::Install {
         let lib_out = config
             .lib_path_output()
             .unwrap_or_else(|| config.out_path());
@@ -82,6 +82,7 @@ pub fn run(config: &mut BuildConfig) -> Result<(), Box<dyn std::error::Error>> {
                 &extra,
                 false,
                 true,
+                false,
             ),
             config.verbose,
         )?;
@@ -109,6 +110,7 @@ pub fn run(config: &mut BuildConfig) -> Result<(), Box<dyn std::error::Error>> {
                 &extra,
                 true,
                 true,
+                config.terminal_artifacts == TerminalArtifacts::Metadata,
             );
             let tmp = fs::canonicalize({
                 fs::create_dir_all("target/tmp")?;
@@ -144,7 +146,8 @@ pub fn run(config: &mut BuildConfig) -> Result<(), Box<dyn std::error::Error>> {
         test_env: &test_env,
     };
 
-    // Bins are always real executables so CARGO_BIN_EXE_<name> resolves.
+    // Metadata mode type-checks terminal targets without producing executables.
+    // Other modes build real binaries so CARGO_BIN_EXE_<name> resolves.
     for (name, path) in &bins {
         bb.build(name, path, BinKind::Bin)?;
     }
@@ -259,9 +262,16 @@ impl BinBuilder<'_> {
         extra.extend_from_slice(self.lib_extern);
         let crate_name_ = name.replace('-', "_");
         let harness = !matches!(kind, BinKind::Test { harness: false });
-        let mut cmd = self
-            .flags
-            .cmd(&crate_name_, path, out_dir, &["bin"], &extra, test, harness);
+        let mut cmd = self.flags.cmd(
+            &crate_name_,
+            path,
+            out_dir,
+            &["bin"],
+            &extra,
+            test,
+            harness,
+            self.config.terminal_artifacts == TerminalArtifacts::Metadata,
+        );
         cmd.env("CARGO_BIN_NAME", name);
         if test {
             for (k, v) in self.test_env {

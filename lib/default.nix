@@ -604,8 +604,9 @@ let
   # Dependencies are built with the real rustc (and cached); only
   # workspace members use the clippy wrapper.
   #
-  # All workspace members are consistently built with clippy-driver so
-  # that inter-workspace-member dependencies have matching rlib metadata.
+  # Each selected workspace root is built with clippy-driver. Dependency
+  # edges, including workspace members, reuse normal lib-only rustc outputs;
+  # aggregate checks still select every member once as a root.
 
   clippyRustcWrapper =
     let
@@ -682,10 +683,10 @@ let
 
       workspaceMemberIds = lib.attrValues resolved'.workspaceMembers;
 
-      # For clippy crate resolution: workspace members use clippy-driver,
-      # everything else reuses the already-cached normal build output.
-      # Clippy checks bins too, so no lib-only split here — alias
-      # cratesLibOnly to self.crates so depDrv's lookup still resolves.
+      # For clippy crate resolution, selected workspace roots use
+      # clippy-driver while every dependency edge reuses the normal lib-only
+      # graph. This matches Cargo's root/dependency boundary and never retains
+      # dependency bins merely because the dependency is a workspace member.
       self = {
         crates = lib.mapAttrs (
           packageId: _:
@@ -697,10 +698,10 @@ let
           else
             normalBuilt.cratesLibOnly.${packageId}
         ) resolved'.crates;
-        cratesLibOnly = self.crates;
+        cratesLibOnly = normalBuilt.cratesLibOnly;
         target = makeDefaultTarget cratePkgs.stdenv.hostPlatform;
-        # Build-platform crates use clippy for workspace members too,
-        # so build scripts see the same rlib metadata as the lib phase.
+        # Build-platform workspace roots also use clippy; their dependency
+        # edges still resolve through the normal lib-only graph above.
         build = mkClippyBuiltByPkgs resolved' cratePkgs.buildPackages true;
       };
     in
@@ -736,7 +737,8 @@ in
   workspaceMembers = lib.mapAttrs (
     name: packageId:
     let
-      testsDrv = builtCrates.crates.${packageId}.override { buildTests = true; };
+      build = builtCrates.crates.${packageId};
+      testsDrv = build.override { buildTests = true; };
     in
     {
       inherit packageId;
@@ -744,11 +746,17 @@ in
       # crateBin, testTargets, source.path). Lets consumers synthesize
       # cargo-metadata-shaped data without running cargo.
       crateInfo = resolved.crates.${packageId};
-      build = builtCrates.crates.${packageId};
+      inherit build;
+      # Compile and link every production target, but retain only a small
+      # success verdict and direct dependency references.
+      verify = build.override { terminalArtifacts = "discard"; };
       # Compile tests with dev-dependencies wired in. Equivalent to
       # `.build.override { buildTests = true; }` — buildRustCrate folds
       # devDependencies into the --extern set only when buildTests is set.
       buildTests = testsDrv;
+      # Compile and link every test target with effective dev-dependencies,
+      # but do not retain the terminal executables.
+      verifyTests = testsDrv.override { terminalArtifacts = "discard"; };
       # Batteries-included runner: sequential across test binaries (matches
       # `cargo test`), libtest parallelism inside each. nativeCheckInputs
       # set via crateOverrides are forwarded so tests that shell out to
@@ -824,6 +832,13 @@ in
       in
       {
         inherit packageId build;
+        # Keep dependency rlibs and build scripts reusable while terminal
+        # targets stop after metadata emission. JSON diagnostics remain in out.
+        check = build.override { terminalArtifacts = "metadata"; };
+        checkTests = build.override {
+          buildTests = true;
+          terminalArtifacts = "metadata";
+        };
         report = "${build}/share/cargo-nix/clippy-diagnostics.jsonl";
       }
     ) resolved.workspaceMembers;

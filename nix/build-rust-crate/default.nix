@@ -50,6 +50,8 @@ lib.makeOverridable
       extraRustcOpts,
       extraRustcOptsForBuildRs,
       buildTests,
+      debugInfo ? if release then 0 else 2,
+      terminalArtifacts ? "install",
       preUnpack,
       postUnpack,
       prePatch,
@@ -91,6 +93,8 @@ lib.makeOverridable
         "colors"
         "edition"
         "buildTests"
+        "debugInfo"
+        "terminalArtifacts"
         "codegenUnits"
         "capLints"
         "links"
@@ -130,8 +134,17 @@ lib.makeOverridable
       extraRustcOptsForBuildRs_ = extraRustcOptsForBuildRs;
       capLints_ = capLints;
       buildTests_ = buildTests;
+      terminalArtifacts_ = terminalArtifacts;
 
     in
+    assert lib.assertMsg (
+      builtins.isInt debugInfo && debugInfo >= 0 && debugInfo <= 2
+    ) "buildRustCrate: debugInfo must be an integer from 0 through 2";
+    assert lib.assertMsg (builtins.elem terminalArtifacts [
+      "install"
+      "discard"
+      "metadata"
+    ]) "buildRustCrate: terminalArtifacts must be one of install, discard, or metadata";
     stdenv.mkDerivation (
       rec {
         __structuredAttrs = true;
@@ -152,10 +165,15 @@ lib.makeOverridable
           preInstall
           postInstall
           buildTests
+          debugInfo
+          terminalArtifacts
           ;
 
         src = crate.src or (fetchCrate { inherit (crate) crateName version sha256; });
-        name = "rust_${crate.crateName}-${crate.version}${lib.optionalString buildTests_ "-test"}";
+        name =
+          "rust_${crate.crateName}-${crate.version}"
+          + lib.optionalString buildTests_ "-test"
+          + lib.optionalString (terminalArtifacts_ != "install") "-${terminalArtifacts_}";
         version = crate.version;
         depsBuildBuild = [ pkgsBuildBuild.stdenv.cc ];
         nativeBuildInputs = [
@@ -221,6 +239,11 @@ lib.makeOverridable
           depExterns
           buildDepExterns
           ;
+
+        # Direct references are sufficient: each dependency output carries its
+        # own references. Derive this from the effective extern sets so test
+        # builds include dev-dependencies after buildTests folds them in.
+        dependencyClosurePaths = uniquePaths (map (dep: dep.libOut) (depExterns ++ buildDepExterns));
 
         completeDeps =
           let
@@ -352,18 +375,18 @@ lib.makeOverridable
           runHook postInstall
         '';
 
-        dontStrip = !release;
+        dontStrip = debugInfo > 0;
         stripExclude = [ "*.rlib" ];
 
         outputs =
-          if buildTests then
+          if buildTests || terminalArtifacts != "install" then
             [ "out" ]
           else
             [
               "out"
               "lib"
             ];
-        outputDev = if buildTests then [ "out" ] else [ "lib" ];
+        outputDev = if buildTests || terminalArtifacts != "install" then [ "out" ] else [ "lib" ];
 
         # Exposed for downstream introspection (cross tests etc.). passthru
         # keeps __structuredAttrs from JSON-serialising the full drvs.
