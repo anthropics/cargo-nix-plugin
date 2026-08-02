@@ -150,5 +150,21 @@ pkgs.runCommand "cargo-nix-plugin-offline-build-test"
     nix-store --realize "$clippy_lib_drv" > /dev/null
     echo "PASS: clippyAllFeatures lints feature-gated code"
 
+    # The all-features path re-resolves the workspace and must preserve
+    # allowExternalPathDeps just like the initial resolution.
+    externalPathExpr='
+      let
+        pkgs = import ${pkgs.path} { system = "${pkgs.stdenv.hostPlatform.system}"; };
+      in import ${pluginSrc}/lib {
+        inherit pkgs;
+        src = ${pluginSrc}/tests/external-path-workspace;
+        manifestPath = "${pluginSrc}/tests/external-path-workspace/Cargo.toml";
+        allowExternalPathDeps = true;
+        clippyAllFeatures = true;
+      }
+    '
+    instantiate "($externalPathExpr).clippy.workspaceMembers.external-path-workspace.build" > /dev/null
+    echo "PASS: clippyAllFeatures preserves allowExternalPathDeps"
+
     echo "$out_json" > $out
   ''

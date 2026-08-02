@@ -1,0 +1,10 @@
+[package]
+name = "external-path-workspace"
+version = "0.1.0"
+edition = "2021"
+
+[features]
+extra = []
+
+[dependencies]
+external-path-dep = { path = "../external-path-dep" }
