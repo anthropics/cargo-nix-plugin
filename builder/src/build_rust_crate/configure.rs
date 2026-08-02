@@ -33,6 +33,33 @@ pub struct BuildScriptOutputs {
     pub build_out_dir: String,
 }
 
+impl BuildScriptOutputs {
+    pub(super) fn remap_paths(&mut self, from: &str, to: &str) {
+        fn remap(value: &mut String, from: &str, to: &str) {
+            *value = value.replace(from, to);
+        }
+
+        remap(&mut self.rustc_flags, from, to);
+        for value in self
+            .cfgs
+            .iter_mut()
+            .chain(&mut self.check_cfgs)
+            .chain(&mut self.link_args)
+            .chain(&mut self.link_args_lib)
+            .chain(&mut self.link_args_bins)
+            .chain(&mut self.link_args_tests)
+            .chain(&mut self.link_libs)
+            .chain(&mut self.link_search)
+            .chain(&mut self.cdylib_link_args)
+            .chain(self.link_args_bin.values_mut().flatten())
+            .chain(self.envs.values_mut())
+        {
+            remap(value, from, to);
+        }
+        remap(&mut self.build_out_dir, from, to);
+    }
+}
+
 /// Resolve the crate's source root from `workspace_member` (or by scanning
 /// for a matching Cargo.toml when unset) and print its absolute path. The
 /// stdenv shell cd's there once before `runHook preConfigure`; genericBuild
@@ -74,6 +101,22 @@ pub fn run(config: &mut BuildConfig) -> Result<(), Box<dyn std::error::Error>> {
     let mut link_final = link.clone();
     let mut build_link: Vec<String> = Vec::new();
 
+    if !config.reusable_root_lib.is_empty() {
+        if super::config::CrateMetadata::load(&config.reusable_root_lib).is_none() {
+            return Err(format!(
+                "reusable root lib {} has no crate-metadata.json",
+                config.reusable_root_lib
+            )
+            .into());
+        }
+        symlink_libs(&config.reusable_root_lib, "target/deps")?;
+        collect_link_flags(
+            &format!("{}/lib", config.reusable_root_lib),
+            &mut link,
+            &mut link_final,
+        )?;
+    }
+
     for path in &config.complete_deps {
         let lib = format!("{path}/lib");
         symlink_libs(path, "target/deps")?;
@@ -110,7 +153,28 @@ pub fn run(config: &mut BuildConfig) -> Result<(), Box<dyn std::error::Error>> {
 
     let base_env = build_env(config, "");
 
-    if let Some(script) = build_script {
+    if !config.reusable_root_lib.is_empty() {
+        if build_script.is_some() {
+            let installed = format!("{}/build-script-outputs.json", config.reusable_root_lib);
+            let serialized = fs::read_to_string(&installed).map_err(|error| {
+                format!(
+                    "reusable root lib {} is missing build-script outputs: {error}",
+                    config.reusable_root_lib
+                )
+            })?;
+            let bso: BuildScriptOutputs = serde_json::from_str(&serialized)?;
+            if bso.build_out_dir.is_empty() || !Path::new(&bso.build_out_dir).is_dir() {
+                return Err(format!(
+                    "reusable root lib {} has invalid build OUT_DIR {}",
+                    config.reusable_root_lib, bso.build_out_dir
+                )
+                .into());
+            }
+            hook_out_dir = bso.build_out_dir.clone();
+            hook_bso_envs = bso.envs.clone();
+            fs::write("target/build-script-outputs.json", serialized)?;
+        }
+    } else if let Some(script) = build_script {
         echo_colored(&format!("Building {script} ({})", config.lib_name));
 
         let build_dir = format!("target/build/{n}", n = config.crate_name);

@@ -50,6 +50,10 @@ pub struct BuildConfig {
     pub build_tests: bool,
     pub debug_info: u8,
     pub terminal_artifacts: TerminalArtifacts,
+    /// Installed lib output for this same package/configuration. Terminal
+    /// verification reuses it instead of compiling the normal library again.
+    #[serde(default)]
+    pub reusable_root_lib: String,
     #[serde(default = "default_codegen_units")]
     pub codegen_units: u32,
     #[serde(default)]

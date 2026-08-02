@@ -738,6 +738,16 @@ in
     name: packageId:
     let
       build = builtCrates.crates.${packageId};
+      crateInfo = resolved.crates.${packageId};
+      reusableRootLib = builtCrates.cratesLibOnly.${packageId};
+      hasLibrary =
+        (crateInfo.libPath or null) != null || (crateInfo.libCrateTypes or [ ]) != [ ];
+      terminalOverride = {
+        terminalArtifacts = "discard";
+      }
+      // lib.optionalAttrs hasLibrary {
+        inherit reusableRootLib;
+      };
       testsDrv = build.override { buildTests = true; };
     in
     {
@@ -745,18 +755,18 @@ in
       # Raw resolver output for this member (name, version, libPath,
       # crateBin, testTargets, source.path). Lets consumers synthesize
       # cargo-metadata-shaped data without running cargo.
-      crateInfo = resolved.crates.${packageId};
+      inherit crateInfo;
       inherit build;
       # Compile and link every production target, but retain only a small
       # success verdict and direct dependency references.
-      verify = build.override { terminalArtifacts = "discard"; };
+      verify = build.override terminalOverride;
       # Compile tests with dev-dependencies wired in. Equivalent to
       # `.build.override { buildTests = true; }` — buildRustCrate folds
       # devDependencies into the --extern set only when buildTests is set.
       buildTests = testsDrv;
       # Compile and link every test target with effective dev-dependencies,
       # but do not retain the terminal executables.
-      verifyTests = testsDrv.override { terminalArtifacts = "discard"; };
+      verifyTests = testsDrv.override terminalOverride;
       # Batteries-included runner: sequential across test binaries (matches
       # `cargo test`), libtest parallelism inside each. nativeCheckInputs
       # set via crateOverrides are forwarded so tests that shell out to

@@ -52,6 +52,7 @@ lib.makeOverridable
       buildTests,
       debugInfo ? if release then 0 else 2,
       terminalArtifacts ? "install",
+      reusableRootLib ? null,
       preUnpack,
       postUnpack,
       prePatch,
@@ -95,6 +96,7 @@ lib.makeOverridable
         "buildTests"
         "debugInfo"
         "terminalArtifacts"
+        "reusableRootLib"
         "codegenUnits"
         "capLints"
         "links"
@@ -135,6 +137,10 @@ lib.makeOverridable
       capLints_ = capLints;
       buildTests_ = buildTests;
       terminalArtifacts_ = terminalArtifacts;
+      reusableRootLib_ = reusableRootLib;
+      reusableRootLibPath = lib.optionalString (reusableRootLib_ != null) (
+        toString (lib.getLib reusableRootLib_)
+      );
 
     in
     assert lib.assertMsg (
@@ -145,6 +151,9 @@ lib.makeOverridable
       "discard"
       "metadata"
     ]) "buildRustCrate: terminalArtifacts must be one of install, discard, or metadata";
+    assert lib.assertMsg (
+      reusableRootLib == null || terminalArtifacts != "install"
+    ) "buildRustCrate: reusableRootLib is only valid for non-install terminal modes";
     stdenv.mkDerivation (
       rec {
         __structuredAttrs = true;
@@ -168,6 +177,7 @@ lib.makeOverridable
           debugInfo
           terminalArtifacts
           ;
+        reusableRootLib = reusableRootLibPath;
 
         src = crate.src or (fetchCrate { inherit (crate) crateName version sha256; });
         name =
@@ -241,9 +251,15 @@ lib.makeOverridable
           ;
 
         # Direct references are sufficient: each dependency output carries its
-        # own references. Derive this from the effective extern sets so test
-        # builds include dev-dependencies after buildTests folds them in.
-        dependencyClosurePaths = uniquePaths (map (dep: dep.libOut) (depExterns ++ buildDepExterns));
+        # own references. A reused root library already retains the normal and
+        # build dependency graph, so terminal tests add only effective dev
+        # dependencies at this boundary.
+        dependencyClosurePaths = uniquePaths (
+          if reusableRootLib_ != null then
+            [ reusableRootLibPath ] ++ map (dep: toString (lib.getLib dep)) (lib.optionals buildTests devDependencies)
+          else
+            map (dep: dep.libOut) (depExterns ++ buildDepExterns)
+        );
 
         completeDeps =
           let
