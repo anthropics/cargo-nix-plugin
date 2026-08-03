@@ -19,8 +19,9 @@
   pkgs,
   lib,
   resolved,
-  # crateInfo -> workspace-relative dir ("." for the root).
-  memberDir,
+  # crateInfo -> workspace-relative dir ("." for the root); matches the
+  # workspace_member the builder writes into package ids.
+  defaultMemberDir,
 }:
 let
   # Must match FAKE_ROOT in builder/src/build_rust_crate/nextest.rs.
@@ -47,7 +48,7 @@ let
   };
 
   memberOf =
-    name: packageId:
+    memberDir: name: packageId:
     let
       info = resolved.crates.${packageId};
       dir = info.source.path;
@@ -118,31 +119,43 @@ let
         inherit (info)
           version
           edition
-          features
           authors
           ;
+        # Empty: guppy validates feature values that name dependencies
+        # (`dep:foo`, `foo/bar`) against `dependencies`, which is empty.
+        features = { };
         targets = libTargets ++ binTargets ++ testTargets;
         manifest_path = "${fakeDir}/Cargo.toml";
         links = info.links or null;
       };
     };
 
-  members = lib.mapAttrs memberOf resolved.workspaceMembers;
-  memberList = lib.attrValues members;
+  # Overrides for consumers whose --workspace-remap target is not
+  # rooted at workspaceRoot (memberDir) or whose runner covers a
+  # subset of the workspace (workspaceMembers).
+  mkMetadataFile =
+    {
+      memberDir ? defaultMemberDir,
+      workspaceMembers ? resolved.workspaceMembers,
+    }:
+    let
+      members = lib.attrValues (lib.mapAttrs (memberOf memberDir) workspaceMembers);
+    in
+    pkgs.writeText "cargo-metadata.json" (
+      builtins.toJSON {
+        packages = map (m: m.package) members;
+        workspace_members = map (m: m.id) members;
+        workspace_default_members = map (m: m.id) members;
+        resolve = null;
+        target_directory = "${fakeRoot}/target";
+        build_directory = "${fakeRoot}/target";
+        version = 1;
+        workspace_root = fakeRoot;
+        metadata = null;
+      }
+    );
 
-  metadataJson = builtins.toJSON {
-    packages = map (m: m.package) memberList;
-    workspace_members = map (m: m.id) memberList;
-    workspace_default_members = map (m: m.id) memberList;
-    resolve = null;
-    target_directory = "${fakeRoot}/target";
-    build_directory = "${fakeRoot}/target";
-    version = 1;
-    workspace_root = fakeRoot;
-    metadata = null;
-  };
-
-  metadataFile = pkgs.writeText "cargo-metadata.json" metadataJson;
+  metadataFile = mkMetadataFile { };
 
   # Like runTests, but via cargo-nextest. That adds per-test-process
   # isolation, retries, and .config/nextest.toml profiles.
@@ -198,5 +211,7 @@ let
     };
 in
 {
+  inherit metadataFile mkMetadataFile;
+
   inherit mkRun;
 }
