@@ -371,6 +371,7 @@ let
             }
             // lib.optionalAttrs (cargoHome != null) { inherit cargoHome; }
             // lib.optionalAttrs (gitSources' != { }) { gitSources = gitSources'; }
+            // lib.optionalAttrs allowExternalPathDeps { inherit allowExternalPathDeps; }
           )
         );
 
