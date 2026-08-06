@@ -300,8 +300,24 @@ a custom harness), the compiled artefacts are at `.buildTests` —
 `$out/tests/*` are the test executables, `$out/bin/*` the real binaries —
 and `runTests.passthru.testsDrv` points there too.
 
-Known limitations: doctests are not built, per-`[[bin]]` unit tests are not
-compiled, and tests under `examples/` / `benches/` are not discovered.
+### Doctests
+
+```nix
+checks.x86_64-linux.my-crate-doctest =
+  cargoNix.workspaceMembers.my-crate.doctest;
+```
+
+`doctest` runs the member's `///` examples with `rustdoc --test`
+(equivalently `cargo test --doc`) in the sandbox. It builds on the
+`buildTests` variant, so the crate's own rlib and every dependency —
+dev-dependencies included — are present, and reuses the exact externs,
+features, edition, and build-script cfgs that compiled the crate, so a
+doctest can't pass vacuously against a divergent dependency set. The
+derivation fails iff a doctest fails. A member with no lib target is a
+no-op, matching `cargo test --doc`.
+
+Known limitations: per-`[[bin]]` unit tests are not compiled, and tests
+under `examples/` / `benches/` are not discovered.
 
 ## How It Works
 

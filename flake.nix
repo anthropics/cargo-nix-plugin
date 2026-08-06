@@ -133,6 +133,14 @@
             sampleProject = ./tests/sample-project-nodeps;
           };
 
+          doctest-run-test = pkgs.callPackage ./tests/doctest-run-test.nix {
+            inherit plugin nix;
+            pluginSrc = ./.;
+            # nodeps variant: doctests compile in the sandbox without
+            # registry access.
+            sampleProject = ./tests/sample-project-nodeps;
+          };
+
           chroot-store-test = pkgs.callPackage ./tests/chroot-store-test.nix {
             inherit plugin nix;
             pluginSrc = ./.;
