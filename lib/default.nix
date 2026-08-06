@@ -449,6 +449,55 @@ let
         workspace_member = null;
       };
 
+  # --- registry proc-macro detection (issue #24) ---
+  # The sparse index carries no crate-type, so the eval-time resolver reports
+  # procMacro=false for every crates.io/registry crate. That value feeds the
+  # cross-compile routing in depDrv below, so a registry proc-macro crate is
+  # mis-routed onto the target graph. Read the truth from the crate's
+  # hash-pinned tarball Cargo.toml instead, matching the three spellings cargo
+  # accepts (and the resolver's lockfile_resolve/manifest.rs): `[lib] proc-macro`,
+  # the deprecated `proc_macro`, or a "proc-macro" entry in `[lib] crate-type`.
+  procMacroFromManifest =
+    manifest:
+    let
+      libTable = manifest.lib or { };
+      crateTypes = libTable."crate-type" or libTable.crate_type or [ ];
+    in
+    libTable."proc-macro" or libTable.proc_macro or (lib.elem "proc-macro" crateTypes);
+
+  # IFD: extract just the top-level Cargo.toml from the fetched `.crate`
+  # (gzipped tar) and read it at eval time. The tarball is hash-pinned
+  # (Cargo.lock checksum -> fetchurl), so this derivation is deterministic and
+  # cached; crates.io always unpacks to a single `${name}-${version}/` top dir.
+  registryProcMacro =
+    crateInfo:
+    let
+      crateSrc = (resolveSrc crateInfo).src;
+      manifestDrv = pkgs.runCommandLocal "${crateInfo.crateName}-${crateInfo.version}-Cargo.toml" { } ''
+        tar -xzf ${crateSrc} -O "${crateInfo.crateName}-${crateInfo.version}/Cargo.toml" > $out
+      '';
+    in
+    procMacroFromManifest (builtins.fromTOML (builtins.readFile manifestDrv));
+
+  # procMacro with registry detection folded in. Local/git crates already carry
+  # the correct value from the resolver; only registry crates need the tarball
+  # probe. `procMacroCrates` remains an escape hatch for anything it can't reach.
+  # The tarball probe is gated on a crates-io/registry source (and its
+  # hash-pin), matching resolveSrc — it must never fire for git/path crates,
+  # whose src has no `${name}-${version}/` tarball layout.
+  isProcMacro =
+    crateInfo:
+    (crateInfo.procMacro or false)
+    || lib.elem crateInfo.crateName procMacroCrates
+    || (
+      let
+        sourceType = crateInfo.source.type or "local";
+      in
+      (sourceType == "crates-io" || sourceType == "registry")
+      && (crateInfo.sha256 or null) != null
+      && registryProcMacro crateInfo
+    );
+
   # Build a crate using buildRustCrate
   # Memoization via the `self` pattern (builtByPackageId)
   mkBuiltByPackageIdByPkgs =
@@ -508,7 +557,7 @@ let
         in
         if
           depCrateInfo != null
-          && ((depCrateInfo.procMacro or false) || lib.elem depCrateInfo.crateName procMacroCrates)
+          && isProcMacro depCrateInfo
         then
           self.build.cratesLibOnly.${dep.packageId}
         else
@@ -560,7 +609,7 @@ let
           crateRenames
           ;
         features = crateInfo.resolvedDefaultFeatures or [ ];
-        procMacro = (crateInfo.procMacro or false) || lib.elem crateInfo.crateName procMacroCrates;
+        procMacro = isProcMacro crateInfo;
       }
       # Only ever pass crateBin to *suppress* bins on the lib-only variant.
       # Never forward crateInfo.crateBin: that is only the explicit [[bin]]
