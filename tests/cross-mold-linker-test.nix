@@ -66,7 +66,9 @@ pkgs.runCommand "cargo-nix-plugin-cross-mold-linker-test"
 
     # ...and gcc must be pointed at a directory holding an unprefixed
     # `ld.mold` via -B, which it searches ahead of PATH.
-    shim_drv=$(grep -o '/nix/store/[a-z0-9]*-mold-unprefixed-ld\.drv' "$cross_drv" | head -1)
+    # `|| true` so the no-match case reaches the check below with its message:
+    # stdenv sets -e and pipefail, which would otherwise abort here silently.
+    shim_drv=$(grep -o -m1 '/nix/store/[a-z0-9]*-mold-unprefixed-ld\.drv' "$cross_drv" || true)
     [ -n "$shim_drv" ] || {
       echo "FAIL: cross build has no mold linker dir among its inputs"
       exit 1
