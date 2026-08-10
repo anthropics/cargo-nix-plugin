@@ -25,6 +25,57 @@
   buildRustCrateBin,
 }:
 
+let
+  # `-fuse-ld=mold` makes gcc search for an *unprefixed* `ld.mold`, but when
+  # cross compiling nixpkgs' mold wrapper installs its wrapped linker under
+  # the target-prefixed name only (`aarch64-unknown-linux-gnu-ld.mold`). gcc
+  # therefore skips the wrapper, finds the *unwrapped* mold that the wrapper
+  # propagates onto PATH, and the ld-wrapper that adds store `-rpath` entries
+  # never runs. Nothing fails at build time — the binary links, and its
+  # libraries are still in the closure — but it is left with an empty RUNPATH
+  # and dies at exec with `cannot open shared object file` for anything
+  # outside glibc, whose loader has its own store path baked in.
+  #
+  # So re-expose the wrapped linker under the name gcc looks for. Handed over
+  # with `-B`, which gcc searches ahead of PATH, so it wins against that
+  # propagated unwrapped mold regardless of input order. nixpkgs' own
+  # `useMoldLinker` adapter does the same thing for the same reason: it
+  # symlinks a second, unprefixed `ld.mold` into the bintools directory
+  # precisely when `targetPrefix != ""`.
+  #
+  # Reached through `__spliced.buildHost` because it is interpolated into a
+  # string rather than placed in `nativeBuildInputs`: interpolation yields the
+  # host-platform mold, which cannot run on the build machine.
+  moldForBuild = if defaultMold == null then null else defaultMold.__spliced.buildHost or defaultMold;
+  moldTargetPrefix = if moldForBuild == null then "" else moldForBuild.targetPrefix or "";
+
+  moldLinkerDir = pkgsBuildBuild.runCommand "mold-unprefixed-ld" { } ''
+    mkdir -p "$out/bin"
+    wrapped="${moldForBuild}/bin/${moldTargetPrefix}ld.mold"
+    # A dangling link would be invisible: gcc would silently fall back to the
+    # unwrapped mold, restoring the empty RUNPATH with a green build. Fail here
+    # instead if the wrapper ever stops installing this name.
+    if [ ! -x "$wrapped" ]; then
+      echo "buildRustCrate: expected a wrapped mold at $wrapped" >&2
+      exit 1
+    fi
+    ln -s "$wrapped" "$out/bin/ld.mold"
+  '';
+
+  # Native builds need no shim — mold's own bin already carries an unprefixed
+  # `ld.mold` there — so their rustc command line stays byte-identical.
+  moldRustcOpts = lib.optionals (defaultMold != null) (
+    [
+      "-C"
+      "link-arg=-fuse-ld=mold"
+    ]
+    ++ lib.optionals (moldTargetPrefix != "") [
+      "-C"
+      "link-arg=-B${moldLinkerDir}/bin/"
+    ]
+  );
+in
+
 crate_:
 lib.makeOverridable
   (
@@ -340,10 +391,7 @@ lib.makeOverridable
             "--edition"
             edition
           ]
-          ++ lib.optionals (defaultMold != null) [
-            "-C"
-            "link-arg=-fuse-ld=mold"
-          ];
+          ++ moldRustcOpts;
         extraRustcOptsForBuildRs =
           lib.optionals (crate ? extraRustcOptsForBuildRs) crate.extraRustcOptsForBuildRs
           ++ extraRustcOptsForBuildRs_
