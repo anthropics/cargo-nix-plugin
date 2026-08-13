@@ -389,6 +389,7 @@ lib.makeOverridable
           runHook preInstall
           build-rust-crate install
           runHook postInstall
+          rm -f "''${lib:-$out}/.cargo-manifest"
         '';
 
         dontStrip = debugInfo > 0;

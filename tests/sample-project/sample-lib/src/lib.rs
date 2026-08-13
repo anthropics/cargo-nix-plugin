@@ -20,12 +20,14 @@ pub fn all_features_probe() -> &'static str {
 #[derive(Serialize, Deserialize, Debug)]
 pub struct Greeting {
     pub message: String,
+    pub manifest_dir: String,
 }
 
 impl Greeting {
     pub fn new(message: &str) -> Self {
         Greeting {
             message: message.to_string(),
+            manifest_dir: env!("CARGO_MANIFEST_DIR").to_string(),
         }
     }
 

@@ -51,6 +51,12 @@ pkgs.runCommand "cargo-nix-plugin-sample-build-test"
       exit 1
     }
 
+    manifest_dir=$(echo "$out_json" | jq -r .manifest_dir)
+    [[ "$manifest_dir" == /nix/store/*/.cargo-manifest ]] || {
+      echo "FAIL: CARGO_MANIFEST_DIR is not stable: $manifest_dir"
+      exit 1
+    }
+
     echo "PASS: workspace built and ran successfully"
 
     # --- Lib-only dep split: sample-lib has a sidecar bin (sample-tool).
@@ -71,6 +77,12 @@ pkgs.runCommand "cargo-nix-plugin-sample-build-test"
     # --realize prints all outputs in hash order; pick the one without -lib suffix.
     lib_root=$(nix-store --realize "$lib_root_drv" | grep -v -- '-lib$')
     lib_dep=$(nix-store --realize "$lib_dep_drv" | grep -v -- '-lib$')
+
+    # Rebuild without the sandbox so Nix chooses a different build directory.
+    # The output must remain byte-for-byte identical even though the crate
+    # expands CARGO_MANIFEST_DIR at compile time.
+    nix-store --option sandbox false --realize "$lib_root_drv" --check > /dev/null
+    echo "PASS: CARGO_MANIFEST_DIR is reproducible without the sandbox"
 
     [[ -x "$lib_root/bin/sample-tool" ]] || {
       echo "FAIL: workspaceMembers.sample-lib.build should include bin/sample-tool"

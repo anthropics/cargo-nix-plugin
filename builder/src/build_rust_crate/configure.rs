@@ -82,6 +82,7 @@ pub fn locate(config: &BuildConfig) -> Result<(), Box<dyn std::error::Error>> {
 
 pub fn run(config: &mut BuildConfig) -> Result<(), Box<dyn std::error::Error>> {
     detect_cargo_toml_info(config);
+    prepare_stable_manifest_dir(config)?;
 
     for dir in &[
         "target/deps",
@@ -332,10 +333,7 @@ fn write_hook_env(
 
 pub fn build_env(config: &BuildConfig, out_dir: &str) -> BTreeMap<String, String> {
     let (major, minor, patch, pre) = parse_version(&config.crate_version);
-    let cwd = std::env::current_dir()
-        .unwrap()
-        .to_string_lossy()
-        .into_owned();
+    let manifest_dir = stable_manifest_dir(config);
 
     let mut env = BTreeMap::from([
         ("CARGO_PKG_NAME".into(), config.crate_name.clone()),
@@ -364,8 +362,11 @@ pub fn build_env(config: &BuildConfig, out_dir: &str) -> BTreeMap<String, String
         ("CARGO_PKG_VERSION_MINOR".into(), minor),
         ("CARGO_PKG_VERSION_PATCH".into(), patch),
         ("CARGO_PKG_VERSION_PRE".into(), pre),
-        ("CARGO_MANIFEST_PATH".into(), format!("{cwd}/Cargo.toml")),
-        ("CARGO_MANIFEST_DIR".into(), cwd),
+        (
+            "CARGO_MANIFEST_PATH".into(),
+            format!("{manifest_dir}/Cargo.toml"),
+        ),
+        ("CARGO_MANIFEST_DIR".into(), manifest_dir),
         ("CARGO".into(), "cargo".into()),
         ("DEBUG".into(), (!config.release).to_string()),
         (
@@ -407,6 +408,40 @@ pub fn build_env(config: &BuildConfig, out_dir: &str) -> BTreeMap<String, String
     }
     env.remove("CARGO_CFG_PROC_MACRO");
     env
+}
+
+/// Return a build-independent path that still resolves to the patched crate
+/// sources while configure, build, and install hooks are running.
+fn stable_manifest_dir(config: &BuildConfig) -> String {
+    let output = config
+        .lib_path_output()
+        .unwrap_or_else(|| config.out_path());
+    format!("{output}/.cargo-manifest")
+}
+
+fn prepare_stable_manifest_dir(config: &BuildConfig) -> std::io::Result<()> {
+    let source = fs::canonicalize(std::env::current_dir()?)?;
+    let manifest_dir = PathBuf::from(stable_manifest_dir(config));
+    if let Some(output) = manifest_dir.parent() {
+        fs::create_dir_all(output)?;
+    }
+
+    match fs::symlink_metadata(&manifest_dir) {
+        Ok(metadata) if metadata.file_type().is_symlink() => fs::remove_file(&manifest_dir)?,
+        Ok(_) => {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::AlreadyExists,
+                format!(
+                    "stable manifest path exists and is not a symlink: {}",
+                    manifest_dir.display()
+                ),
+            ));
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error),
+    }
+
+    symlink(source, manifest_dir)
 }
 
 fn parse_version(v: &str) -> (String, String, String, String) {
