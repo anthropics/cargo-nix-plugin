@@ -223,8 +223,11 @@ cargoNix = cargo-nix-plugin.lib {
 # Check all workspace members
 cargoNix.clippy.allWorkspaceMembers
 
-# Check a single member
-cargoNix.clippy.workspaceMembers.my-crate.build
+# Check a single member without retaining linked terminal artifacts
+cargoNix.clippy.workspaceMembers.my-crate.check
+
+# Include library, binary, unit-test, and integration-test targets
+cargoNix.clippy.workspaceMembers.my-crate.checkTests
 
 # Collect cached JSON diagnostics from all workspace members
 cargoNix.clippy.report
@@ -251,6 +254,13 @@ Each clippy member build retains its raw rustc JSON diagnostics at
 re-running clippy. The build log still shows the rendered diagnostics; only the
 on-disk report is JSON.
 
+The compatibility `.build` output installs normal artifacts. `.check` and
+`.checkTests` use metadata emission only for terminal bin and test targets;
+dependency libraries, proc macros, and build scripts remain normal reusable
+builds. The selected root library is compiled normally for its terminal targets
+but is not installed in the metadata verdict output. That output retains JSON
+diagnostics and direct dependency references, but no terminal executables.
+
 The report is an output of the clippy build, so it only exists when that build
 succeeds. If you need both the JSON and a failing CI gate, leave `clippyArgs`
 without `-D warnings` and build `cargoNix.clippy.reportCheck` instead — it
@@ -263,17 +273,23 @@ findings.
 command-line flags and produces the same artifacts, but also runs lint passes.
 The wrapper creates a small shim package where `bin/rustc` calls
 `clippy-driver`, and passes it as the `rust` override to `buildRustCrate` for
-workspace members only. Non-workspace dependencies use the normal `rustc` and
-resolve to the **exact same Nix store paths** as a regular build — no redundant
-compilation. With `clippyAllFeatures = true`, dependencies whose feature set
-grows are rebuilt once for the clippy path; everything else is still shared
-with the regular build.
+each selected workspace root. All dependency edges, including workspace-member
+dependencies, use normal lib-only `rustc` outputs. They therefore resolve to the
+**exact same Nix store paths** as a regular build — no redundant terminal builds.
+With `clippyAllFeatures = true`, dependencies whose feature set grows are rebuilt
+once for the clippy path; everything else is still shared with the regular build.
 
 ## Tests
 
 ```nix
 checks.x86_64-linux.my-crate-tests =
   cargoNix.workspaceMembers.my-crate.runTests;
+
+# Link production or test targets without retaining their executables
+checks.x86_64-linux.my-crate-verify =
+  cargoNix.workspaceMembers.my-crate.verify;
+checks.x86_64-linux.my-crate-verify-tests =
+  cargoNix.workspaceMembers.my-crate.verifyTests;
 ```
 
 `runTests` compiles lib unit tests and integration tests under `tests/`
@@ -299,6 +315,17 @@ fresh temp dir. If you need different behaviour (test filters, `--nocapture`,
 a custom harness), the compiled artefacts are at `.buildTests` —
 `$out/tests/*` are the test executables, `$out/bin/*` the real binaries —
 and `runTests.passthru.testsDrv` points there too.
+
+Each member keeps the existing `.build`, `.buildTests`, and `.runTests`
+interfaces. `.verify` and `.verifyTests` perform the same full compilation and
+linking as their install variants, then retain only a success verdict and the
+direct effective dependency references. Nix follows those references
+transitively, so Cargo-Nix does not serialize a duplicate dependency graph.
+
+`buildRustCrate` also accepts `debugInfo = 0`, `1`, or `2`. Release builds
+default to `0`; non-release builds default to `2`. The value is passed to both
+target and build-script rustc invocations and controls whether stdenv strips
+the installed output.
 
 ### Doctests
 

@@ -89,10 +89,10 @@ fn base_rustc_flags(config: &BuildConfig) -> Vec<String> {
 
     if config.release {
         flags.extend_from_slice(&["-C".into(), "opt-level=3".into()]);
-    } else {
-        flags.extend_from_slice(&["-C".into(), "debuginfo=2".into()]);
     }
     flags.extend_from_slice(&[
+        "-C".into(),
+        format!("debuginfo={}", config.debug_info),
         "-C".into(),
         format!("codegen-units={n}", n = config.codegen_units),
     ]);
@@ -228,6 +228,7 @@ impl RustcFlags {
         extra_flags: &[String],
         test: bool,
         harness: bool,
+        emit_metadata: bool,
     ) -> Command {
         let mut cmd = Command::new("rustc");
         cmd.env("CARGO_CRATE_NAME", crate_name);
@@ -252,6 +253,9 @@ impl RustcFlags {
             } else {
                 cmd.arg("--cfg").arg("test");
             }
+        }
+        if emit_metadata {
+            cmd.arg("--emit=metadata");
         }
 
         cmd.args(&self.base)

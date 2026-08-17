@@ -311,9 +311,13 @@ fn parse_member_manifest(
     let version = inherit_pkg_str(pkg, "version", ws_pkg.version.as_deref())
         .unwrap_or("0.0.0")
         .to_string();
-    let edition = inherit_pkg_str(pkg, "edition", ws_pkg.edition.as_deref())
-        .unwrap_or("2021")
-        .to_string();
+    // Cargo defaults an absent edition to 2015. Keep the existing fallback
+    // for an edition field that is present but cannot be resolved.
+    let edition = match pkg.get("edition") {
+        None => "2015",
+        Some(_) => inherit_pkg_str(pkg, "edition", ws_pkg.edition.as_deref()).unwrap_or("2021"),
+    }
+    .to_string();
     let links = pkg.get("links").and_then(|v| v.as_str()).map(String::from);
     let authors = toml_str_array(pkg.get("authors"));
 
@@ -1009,6 +1013,33 @@ mod tests {
             "[package]\nname = \"a\"\nversion = \"0.1.0\"\n[lib]\ncrate-type = [\"cdylib\"]\n"
         ));
         assert!(!probe("[package]\nname = \"a\"\nversion = \"0.1.0\"\n"));
+    }
+
+    #[test]
+    fn parse_member_uses_cargo_edition_defaults_and_inheritance() {
+        let probe = |package_fields: &str, workspace_edition: Option<&str>| {
+            let toml: toml::Value = toml::from_str(&format!(
+                "[package]\nname = \"a\"\nversion = \"0.1.0\"\n{package_fields}\n"
+            ))
+            .unwrap();
+            let pkg = toml.get("package").unwrap();
+            parse_member_manifest(
+                &toml,
+                pkg,
+                Path::new("/nonexistent"),
+                &HashMap::new(),
+                &WorkspacePackage {
+                    edition: workspace_edition.map(String::from),
+                    version: None,
+                },
+            )
+            .unwrap()
+            .edition
+        };
+
+        assert_eq!(probe("", None), "2015");
+        assert_eq!(probe("edition = \"2021\"", None), "2021");
+        assert_eq!(probe("edition.workspace = true", Some("2024")), "2024");
     }
 
     #[test]
