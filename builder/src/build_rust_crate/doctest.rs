@@ -88,9 +88,9 @@ fn doctest_args(
     args.push(format!("{crate_name}={self_lib}"));
 
     // Dependency `--extern`s, features, edition, codegen/target/linker opts.
-    args.extend_from_slice(&flags.base);
+    args.extend(strip_rustdoc_unsupported(&flags.base));
     // Build-script `--cfg` / `--check-cfg` / link flags.
-    args.extend_from_slice(&flags.link);
+    args.extend(strip_rustdoc_unsupported(&flags.link));
     // `-L <OUT_DIR>` when a build script emitted one.
     args.extend_from_slice(&flags.out_dir);
 
@@ -99,6 +99,32 @@ fn doctest_args(
     args.push("--color".into());
     args.push(flags.colors.clone());
     args
+}
+
+/// Drop rustc flags that stable `rustdoc` gates behind `-Z unstable-options`:
+/// `--remap-path-prefix` is an error there, and the builder always passes it
+/// for sandbox path normalization. Accepts both `--flag=value` and
+/// `--flag value` spellings.
+fn strip_rustdoc_unsupported(flags: &[String]) -> Vec<String> {
+    const UNSTABLE: [&str; 1] = ["--remap-path-prefix"];
+
+    let mut out = Vec::with_capacity(flags.len());
+    let mut skip_value = false;
+    for flag in flags {
+        if skip_value {
+            skip_value = false;
+            continue;
+        }
+        if UNSTABLE.iter().any(|u| flag == u) {
+            skip_value = true;
+            continue;
+        }
+        if UNSTABLE.iter().any(|u| flag.starts_with(&format!("{u}="))) {
+            continue;
+        }
+        out.push(flag.clone());
+    }
+    out
 }
 
 #[cfg(test)]
@@ -115,6 +141,9 @@ mod tests {
                 "feature=\"std\"".into(),
                 "--edition".into(),
                 "2021".into(),
+                "--remap-path-prefix=/build=/".into(),
+                "--remap-path-prefix".into(),
+                "/nix/store/abc-rustc=/rustc".into(),
             ],
             meta: vec!["-C".into(), "metadata=deadbeef".into()],
             link: vec!["--cfg".into(), "have_atomics".into()],
@@ -170,6 +199,25 @@ mod tests {
         // `-C metadata` / `extra-filename` are lib-build only; a doc target
         // must not carry them.
         assert!(!args.iter().any(|a| a.starts_with("metadata=")));
+    }
+
+    #[test]
+    fn doctest_args_drop_remap_path_prefix() {
+        let f = flags();
+        let args = doctest_args(
+            &f,
+            "mycrate",
+            &["lib".into()],
+            "src/lib.rs",
+            "target/lib/libmycrate-deadbeef.rlib",
+        );
+
+        assert!(!args.iter().any(|a| a.starts_with("--remap-path-prefix")));
+        // The two-token spelling must not leave its value behind.
+        assert!(!args.iter().any(|a| a == "/nix/store/abc-rustc=/rustc"));
+        // Neighbouring flags survive.
+        assert!(has_pair(&args, "--edition", "2021"));
+        assert!(has_pair(&args, "--cfg", "have_atomics"));
     }
 
     #[test]
