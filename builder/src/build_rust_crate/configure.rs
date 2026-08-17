@@ -412,11 +412,16 @@ pub fn build_env(config: &BuildConfig, out_dir: &str) -> BTreeMap<String, String
 
 /// Return a build-independent path that still resolves to the patched crate
 /// sources while configure, build, and install hooks are running.
+///
+/// Always anchored to `out`, never `lib`. A crate that expands
+/// `env!("CARGO_MANIFEST_DIR")` embeds this string in every artifact it
+/// produces, so anchoring it to `lib` gives `out` a reference to `lib` —
+/// and `lib` already references `out` through
+/// `nix-support/propagated-build-inputs`, which Nix rejects as a reference
+/// cycle between the two outputs. Anchoring to `out` adds no edge that the
+/// propagated-inputs file does not already create.
 fn stable_manifest_dir(config: &BuildConfig) -> String {
-    let output = config
-        .lib_path_output()
-        .unwrap_or_else(|| config.out_path());
-    format!("{output}/.cargo-manifest")
+    format!("{}/.cargo-manifest", config.out_path())
 }
 
 fn prepare_stable_manifest_dir(config: &BuildConfig) -> std::io::Result<()> {
