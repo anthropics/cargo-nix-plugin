@@ -5,21 +5,26 @@ use std::fs;
 use std::os::unix::fs::{PermissionsExt, symlink};
 use std::path::Path;
 
-use super::config::{BuildConfig, CrateMetadata};
-use super::configure::detect_cargo_toml_info;
+use super::config::{BuildConfig, CrateMetadata, TerminalArtifacts};
+use super::configure::{BuildScriptOutputs, detect_cargo_toml_info};
 
 pub fn run(config: &mut BuildConfig) -> Result<(), Box<dyn std::error::Error>> {
     detect_cargo_toml_info(config);
 
     let metadata = &config.metadata;
     let out = config.out_path();
+    fs::create_dir_all(out)?;
+
+    if config.terminal_artifacts != TerminalArtifacts::Install {
+        return write_verdict(config);
+    }
 
     if config.build_tests {
-        return install_tests(config);
+        install_tests(config)?;
+        return write_verdict(config);
     }
 
     let lib_out = config.lib_path_output().unwrap_or(out);
-    fs::create_dir_all(out)?;
     fs::create_dir_all(lib_out)?;
 
     // Copy link flags for downstream crates
@@ -45,6 +50,7 @@ pub fn run(config: &mut BuildConfig) -> Result<(), Box<dyn std::error::Error>> {
     let cwd = std::env::current_dir()?.to_string_lossy().into_owned();
     let sandbox_build = format!("{cwd}/target/build/");
     let installed_build = format!("{lib_out}/lib/");
+    install_build_script_metadata(lib_out, &sandbox_build, &installed_build)?;
     let links_vars: std::collections::BTreeMap<String, String> =
         fs::read_to_string("target/links-vars.json")
             .ok()
@@ -96,12 +102,9 @@ pub fn run(config: &mut BuildConfig) -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    // Copy build script outputs
-    if dir_has_files("target/build") {
-        let dst = format!("{lib_out}/lib");
-        fs::create_dir_all(&dst)?;
-        copy_tree("target/build", &dst)?;
-    }
+    // Build scripts have already executed. Retain only their Cargo-owned
+    // OUT_DIR data; compiled executables and dep-info are not downstream inputs.
+    copy_build_output_dirs("target/build", &format!("{lib_out}/lib"))?;
 
     // Copy binaries
     if dir_has_files("target/bin") {
@@ -110,6 +113,85 @@ pub fn run(config: &mut BuildConfig) -> Result<(), Box<dyn std::error::Error>> {
         copy_tree("target/bin", &dst)?;
     }
 
+    write_verdict(config)
+}
+
+fn install_build_script_metadata(
+    lib_out: &str,
+    sandbox_build: &str,
+    installed_build: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let serialized = match fs::read_to_string("target/build-script-outputs.json") {
+        Ok(serialized) => serialized,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error.into()),
+    };
+    let mut outputs: BuildScriptOutputs = serde_json::from_str(&serialized)?;
+    outputs.remap_paths(sandbox_build, installed_build);
+    fs::write(
+        format!("{lib_out}/build-script-outputs.json"),
+        serde_json::to_string_pretty(&outputs)?,
+    )?;
+    Ok(())
+}
+
+fn copy_build_output_dirs(src: &str, dst: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let Ok(entries) = fs::read_dir(src) else {
+        return Ok(());
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        if !name.to_string_lossy().ends_with(".out") {
+            continue;
+        }
+        let source = entry.path();
+        if !source.is_dir() {
+            return Err(format!(
+                "build-script OUT_DIR {} is not a directory",
+                source.display()
+            )
+            .into());
+        }
+        let target = Path::new(dst).join(name);
+        fs::create_dir_all(&target)?;
+        copy_tree(&source.to_string_lossy(), &target.to_string_lossy())?;
+    }
+    Ok(())
+}
+
+/// Record successful completion and direct effective dependency references.
+/// Nix follows those direct outputs transitively; flattening the graph here
+/// would duplicate dependency resolution and retain more than necessary.
+fn write_verdict(config: &BuildConfig) -> Result<(), Box<dyn std::error::Error>> {
+    let support = format!("{}/nix-support", config.out_path());
+    fs::create_dir_all(&support)?;
+    fs::write(
+        format!("{support}/cargo-nix-build-complete"),
+        format!("{}\n", config.terminal_artifacts.as_str()),
+    )?;
+
+    let mut paths = config.dependency_closure_paths.clone();
+    paths.sort();
+    paths.dedup();
+    let references = if paths.is_empty() {
+        String::new()
+    } else {
+        format!("{}\n", paths.join("\n"))
+    };
+    let closure_output =
+        if config.terminal_artifacts == TerminalArtifacts::Install && !config.build_tests {
+            config
+                .lib_path_output()
+                .unwrap_or_else(|| config.out_path())
+        } else {
+            config.out_path()
+        };
+    let closure_support = format!("{closure_output}/nix-support");
+    fs::create_dir_all(&closure_support)?;
+    fs::write(
+        format!("{closure_support}/rust-dependency-closure"),
+        references,
+    )?;
     Ok(())
 }
 

@@ -4,7 +4,7 @@
 use std::fs;
 use std::path::Path;
 
-use super::config::{BuildConfig, CrateMetadata};
+use super::config::{BuildConfig, CrateMetadata, TerminalArtifacts};
 use super::configure::{BuildScriptOutputs, build_env, detect_cargo_toml_info};
 use super::rustc::RustcFlags;
 use super::util::{echo_colored, remove_object_files, run_cmd, set_var};
@@ -32,7 +32,9 @@ fn setup_build(config: &BuildConfig) -> Result<RustcFlags, Box<dyn std::error::E
         set_var(k, v);
     }
 
-    persist_bso_link_flags(&bso, config)?;
+    if config.reusable_root_lib.is_empty() {
+        persist_bso_link_flags(&bso, config)?;
+    }
     Ok(RustcFlags::new(config, &bso))
 }
 
@@ -44,7 +46,7 @@ pub fn run(config: &mut BuildConfig) -> Result<(), Box<dyn std::error::Error>> {
     // construct `--extern` args. `install` overwrites with the scanned
     // `target/lib` artifact set. Under plain nix-build the early write is
     // unobservable (dependents only start after install).
-    if !config.build_tests {
+    if !config.build_tests && config.terminal_artifacts == TerminalArtifacts::Install {
         let lib_out = config
             .lib_path_output()
             .unwrap_or_else(|| config.out_path());
@@ -57,8 +59,44 @@ pub fn run(config: &mut BuildConfig) -> Result<(), Box<dyn std::error::Error>> {
 
     let mut lib_extern: Vec<String> = Vec::new();
 
-    // Build lib
-    if let Some(lib_src) = resolve_lib_path(config) {
+    let lib_src = resolve_lib_path(config);
+    if !config.reusable_root_lib.is_empty() && lib_src.is_none() {
+        return Err(format!(
+            "reusable root lib was supplied for {}, but the package has no library target",
+            config.crate_name
+        )
+        .into());
+    }
+
+    // A terminal verifier consumes the normal library's reusable output.
+    // Install-mode builds and Clippy still compile the selected root library.
+    if !config.reusable_root_lib.is_empty() {
+        let root = CrateMetadata::load(&config.reusable_root_lib).ok_or_else(|| {
+            format!(
+                "reusable root lib {} has no crate-metadata.json",
+                config.reusable_root_lib
+            )
+        })?;
+        if root.lib_name != crate_name {
+            return Err(format!(
+                "reusable root lib mismatch for {}: expected library {crate_name}, got {}",
+                config.crate_name, root.lib_name
+            )
+            .into());
+        }
+        if root_is_rust_linkable(&root) {
+            let artifact = reusable_root_extern_artifact(&root).ok_or_else(|| {
+                format!(
+                    "reusable root lib {} has no Rust-linkable artifact",
+                    config.reusable_root_lib
+                )
+            })?;
+            lib_extern.extend_from_slice(&[
+                "--extern".into(),
+                format!("{crate_name}=target/deps/{artifact}"),
+            ]);
+        }
+    } else if let Some(lib_src) = &lib_src {
         echo_colored(&format!("Building {lib_src} ({})", config.lib_name));
         let crate_types: Vec<&str> = config.crate_type.iter().map(|s| s.as_str()).collect();
         let mut extra = flags.meta.clone();
@@ -76,12 +114,13 @@ pub fn run(config: &mut BuildConfig) -> Result<(), Box<dyn std::error::Error>> {
         run_cmd(
             &mut flags.cmd(
                 &crate_name,
-                &lib_src,
+                lib_src,
                 "target/lib",
                 &crate_types,
                 &extra,
                 false,
                 true,
+                false,
             ),
             config.verbose,
         )?;
@@ -98,25 +137,34 @@ pub fn run(config: &mut BuildConfig) -> Result<(), Box<dyn std::error::Error>> {
             lib_extern
                 .extend_from_slice(&["--extern".into(), format!("{crate_name}={lib_artifact}")]);
         }
+    }
 
-        if config.build_tests {
-            echo_colored(&format!("Building test lib {}", config.lib_name));
-            let mut cmd = flags.cmd(
-                &crate_name,
-                &lib_src,
-                "target/lib",
-                &crate_types,
-                &extra,
-                true,
-                true,
-            );
-            let tmp = fs::canonicalize({
-                fs::create_dir_all("target/tmp")?;
-                "target/tmp"
-            })?;
-            cmd.env("CARGO_TARGET_TMPDIR", tmp);
-            run_cmd(&mut cmd, config.verbose)?;
+    if config.build_tests
+        && let Some(lib_src) = &lib_src
+    {
+        echo_colored(&format!("Building test lib {}", config.lib_name));
+        let crate_types: Vec<&str> = config.crate_type.iter().map(|s| s.as_str()).collect();
+        let mut extra = flags.meta.clone();
+        extra.extend_from_slice(&flags.bso_lib);
+        if config.crate_type.iter().any(|t| t == "cdylib") {
+            extra.extend_from_slice(&flags.bso_cdylib);
         }
+        let mut cmd = flags.cmd(
+            &crate_name,
+            lib_src,
+            "target/lib",
+            &crate_types,
+            &extra,
+            true,
+            true,
+            config.terminal_artifacts == TerminalArtifacts::Metadata,
+        );
+        let tmp = fs::canonicalize({
+            fs::create_dir_all("target/tmp")?;
+            "target/tmp"
+        })?;
+        cmd.env("CARGO_TARGET_TMPDIR", tmp);
+        run_cmd(&mut cmd, config.verbose)?;
     }
 
     let bins = resolve_bins(config);
@@ -144,7 +192,8 @@ pub fn run(config: &mut BuildConfig) -> Result<(), Box<dyn std::error::Error>> {
         test_env: &test_env,
     };
 
-    // Bins are always real executables so CARGO_BIN_EXE_<name> resolves.
+    // Metadata mode type-checks terminal targets without producing executables.
+    // Other modes build real binaries so CARGO_BIN_EXE_<name> resolves.
     for (name, path) in &bins {
         bb.build(name, path, BinKind::Bin)?;
     }
@@ -164,6 +213,43 @@ pub fn run(config: &mut BuildConfig) -> Result<(), Box<dyn std::error::Error>> {
 
     remove_object_files("target")?;
     Ok(())
+}
+
+fn root_is_rust_linkable(root: &CrateMetadata) -> bool {
+    root.proc_macro
+        || root
+            .crate_types
+            .iter()
+            .any(|kind| matches!(kind.as_str(), "lib" | "rlib" | "dylib" | "proc-macro"))
+}
+
+fn reusable_root_extern_artifact(root: &CrateMetadata) -> Option<&str> {
+    if !root_is_rust_linkable(root) {
+        return None;
+    }
+    root.artifacts
+        .iter()
+        .find(|artifact| artifact.ends_with(".rlib"))
+        .map(String::as_str)
+        .or_else(|| {
+            let has_dynamic_rust_abi = root.proc_macro
+                || root
+                    .crate_types
+                    .iter()
+                    .any(|kind| matches!(kind.as_str(), "dylib" | "proc-macro"));
+            if has_dynamic_rust_abi {
+                root.artifacts
+                    .iter()
+                    .find(|artifact| {
+                        artifact.ends_with(".so")
+                            || artifact.ends_with(".dylib")
+                            || artifact.ends_with(".dll")
+                    })
+                    .map(String::as_str)
+            } else {
+                None
+            }
+        })
 }
 
 /// Append build-script link search/lib flags to target/link and
@@ -259,9 +345,16 @@ impl BinBuilder<'_> {
         extra.extend_from_slice(self.lib_extern);
         let crate_name_ = name.replace('-', "_");
         let harness = !matches!(kind, BinKind::Test { harness: false });
-        let mut cmd = self
-            .flags
-            .cmd(&crate_name_, path, out_dir, &["bin"], &extra, test, harness);
+        let mut cmd = self.flags.cmd(
+            &crate_name_,
+            path,
+            out_dir,
+            &["bin"],
+            &extra,
+            test,
+            harness,
+            self.config.terminal_artifacts == TerminalArtifacts::Metadata,
+        );
         cmd.env("CARGO_BIN_NAME", name);
         if test {
             for (k, v) in self.test_env {
