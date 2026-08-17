@@ -51,6 +51,9 @@ pkgs.runCommand "cargo-nix-plugin-sample-build-test"
       exit 1
     }
 
+    # env!("CARGO_MANIFEST_DIR") is expanded at compile time and cannot be
+    # rewritten by --remap-path-prefix, so it must not be derived from the
+    # build directory, which Nix is free to choose per build.
     manifest_dir=$(echo "$out_json" | jq -r .manifest_dir)
     [[ "$manifest_dir" == /nix/store/*/.cargo-manifest ]] || {
       echo "FAIL: CARGO_MANIFEST_DIR is not stable: $manifest_dir"
@@ -78,12 +81,6 @@ pkgs.runCommand "cargo-nix-plugin-sample-build-test"
     lib_root=$(nix-store --realize "$lib_root_drv" | grep -v -- '-lib$')
     lib_dep=$(nix-store --realize "$lib_dep_drv" | grep -v -- '-lib$')
 
-    # Rebuild without the sandbox so Nix chooses a different build directory.
-    # The output must remain byte-for-byte identical even though the crate
-    # expands CARGO_MANIFEST_DIR at compile time.
-    nix-store --option sandbox false --realize "$lib_root_drv" --check > /dev/null
-    echo "PASS: CARGO_MANIFEST_DIR is reproducible without the sandbox"
-
     [[ -x "$lib_root/bin/sample-tool" ]] || {
       echo "FAIL: workspaceMembers.sample-lib.build should include bin/sample-tool"
       exit 1
@@ -93,6 +90,27 @@ pkgs.runCommand "cargo-nix-plugin-sample-build-test"
       exit 1
     }
     echo "PASS: lib-only dep split suppresses sidecar bins"
+
+    # Built as the root crate, sample-lib's manifest dir must resolve to its
+    # own out path. That path is fixed at eval time, so it is the same
+    # whichever directory Nix picks to build in.
+    tool_manifest_dir=$("$lib_root"/bin/sample-tool | jq -r .manifest_dir)
+    [[ "$tool_manifest_dir" == "$lib_root/.cargo-manifest" ]] || {
+      echo "FAIL: CARGO_MANIFEST_DIR is not output-derived: $tool_manifest_dir"
+      exit 1
+    }
+
+    # ...and no path under the build directory may survive in the artifact.
+    # Nix builds in /build when sandboxed and under /tmp/nix-build otherwise.
+    # Match only paths naming the workspace: rustc's own /build/rustc-*-src
+    # source paths come from the compiler in nixpkgs and are expected.
+    if grep -qaE '(/build|/tmp/nix-build)[^ ]*sample-project' "$lib_root/bin/sample-tool"; then
+      echo "FAIL: sample-tool embeds a build-directory path:"
+      grep -oaE '(/build|/tmp/nix-build)[^ ]*sample-project[^ ]*' "$lib_root/bin/sample-tool" |
+        sort -u | head
+      exit 1
+    fi
+    echo "PASS: CARGO_MANIFEST_DIR is independent of the build directory"
 
     # --- Clippy test: lint all workspace members with clippy-driver ---
     clippy_drv=$(nix-instantiate \
