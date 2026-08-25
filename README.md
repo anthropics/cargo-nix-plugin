@@ -327,8 +327,24 @@ default to `0`; non-release builds default to `2`. The value is passed to both
 target and build-script rustc invocations and controls whether stdenv strips
 the installed output.
 
-Known limitations: doctests are not built, per-`[[bin]]` unit tests are not
-compiled, and tests under `examples/` / `benches/` are not discovered.
+### Doctests
+
+```nix
+checks.x86_64-linux.my-crate-doctest =
+  cargoNix.workspaceMembers.my-crate.doctest;
+```
+
+`doctest` runs the member's `///` examples with `rustdoc --test`
+(equivalently `cargo test --doc`) in the sandbox. It builds on the
+`buildTests` variant, so the crate's own rlib and every dependency —
+dev-dependencies included — are present, and reuses the exact externs,
+features, edition, and build-script cfgs that compiled the crate, so a
+doctest can't pass vacuously against a divergent dependency set. The
+derivation fails iff a doctest fails. A member with no lib target is a
+no-op, matching `cargo test --doc`.
+
+Known limitations: per-`[[bin]]` unit tests are not compiled, and tests
+under `examples/` / `benches/` are not discovered.
 
 ## How It Works
 

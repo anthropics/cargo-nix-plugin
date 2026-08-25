@@ -11,7 +11,7 @@ use super::util::{echo_colored, remove_object_files, run_cmd, set_var};
 
 /// Load build-script outputs, export CARGO_* / rustc-env, persist link flags,
 /// compute rustc flags. Caller must already be in the crate root.
-fn setup_build(config: &BuildConfig) -> Result<RustcFlags, Box<dyn std::error::Error>> {
+pub(super) fn setup_build(config: &BuildConfig) -> Result<RustcFlags, Box<dyn std::error::Error>> {
     let bso: BuildScriptOutputs = match fs::read_to_string("target/build-script-outputs.json") {
         Ok(s) => serde_json::from_str(&s)?,
         Err(_) => BuildScriptOutputs::default(),
@@ -377,7 +377,7 @@ impl BinBuilder<'_> {
     }
 }
 
-fn resolve_lib_path(config: &BuildConfig) -> Option<String> {
+pub(super) fn resolve_lib_path(config: &BuildConfig) -> Option<String> {
     if !config.lib_path.is_empty() && Path::new(&config.lib_path).exists() {
         Some(config.lib_path.clone())
     } else if config.autolib && Path::new("src/lib.rs").exists() {

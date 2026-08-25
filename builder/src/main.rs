@@ -21,7 +21,7 @@ use build_rust_crate::config::BuildConfig;
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     if args.len() < 2 {
-        eprintln!("usage: build-rust-crate <locate|configure|build|install>");
+        eprintln!("usage: build-rust-crate <locate|configure|build|doctest|install>");
         process::exit(1);
     }
 
@@ -45,6 +45,7 @@ fn main() {
         "locate" => build_rust_crate::configure::locate(&config),
         "configure" => build_rust_crate::configure::run(&mut config),
         "build" => build_rust_crate::build::run(&mut config),
+        "doctest" => build_rust_crate::doctest::run(&mut config),
         "install" => build_rust_crate::install::run(&mut config),
         other => {
             eprintln!("error: unknown subcommand: {other}");

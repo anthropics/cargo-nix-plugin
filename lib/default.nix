@@ -813,6 +813,19 @@ in
         inherit name testsDrv;
         workspaceSrc = src;
       };
+      # Documentation tests (`cargo test --doc`). Sibling to buildTests /
+      # nextestRun: builds on the buildTests variant so the lib rlib and every
+      # dependency (dev-dependencies included) are already in the sandbox, then
+      # runs `rustdoc --test` against the member's lib as an extra build step,
+      # reusing the exact externs / features / edition / build-script cfgs that
+      # compiled the crate. The build fails iff a doctest fails. A member with
+      # no lib target is a no-op, matching `cargo test --doc`.
+      doctest = testsDrv.overrideAttrs (old: {
+        name = "${name}-doctest";
+        postBuild = (old.postBuild or "") + ''
+          build-rust-crate doctest
+        '';
+      });
     }
   ) resolved.workspaceMembers;
 
