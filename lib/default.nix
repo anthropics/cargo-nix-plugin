@@ -148,7 +148,7 @@ let
   # Contract version between this wrapper and the Rust resolver (input
   # attrset + WorkspaceResult). Must match API_LEVEL in
   # rust/src/resolve.rs; bump both on incompatible changes.
-  apiLevel = 3;
+  apiLevel = 4;
 
   # Probe the loaded plugin before calling it so skew surfaces as a
   # clear message, not a serde/attr error. `or 0` covers plugins
