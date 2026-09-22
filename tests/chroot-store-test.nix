@@ -32,6 +32,7 @@ pkgs.runCommand "cargo-nix-plugin-chroot-store-test"
       rustc = pkgs.rustc;
       cargo = pkgs.cargo;
       stdenv = pkgs.stdenv;
+      stdenvNoCC = pkgs.stdenvNoCC;
       mold = pkgs.mold;
       buildRustCrateBin = pkgs.callPackage ../nix/build-rust-crate-bin.nix { };
       sampleProject = sampleProject;
@@ -77,7 +78,7 @@ pkgs.runCommand "cargo-nix-plugin-chroot-store-test"
             pinnedBuildRustCrate = pkgs.callPackage (builtins.storePath ${pluginSrc}/nix/build-rust-crate) {
               rustc = builtins.storePath ${pkgs.rustc};
               cargo = builtins.storePath ${pkgs.cargo};
-              mold = builtins.storePath ${pkgs.mold};
+              defaultMold = builtins.storePath ${pkgs.mold};
               buildRustCrateBin = builtins.storePath ${
                 pkgs.callPackage ../nix/build-rust-crate-bin.nix { }
               };

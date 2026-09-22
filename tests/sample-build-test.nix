@@ -13,6 +13,22 @@
   nix,
 }:
 
+let
+  # Only the rustc opts are needed, so no cross toolchain gets built.
+  crossPkgs =
+    if pkgs.stdenv.hostPlatform.isAarch64 then
+      pkgs.pkgsCross.gnu64
+    else
+      pkgs.pkgsCross.aarch64-multiplatform;
+  crossRustcOpts = pkgs.writeText "cross-rustc-opts" (
+    builtins.concatStringsSep "\n"
+      ((crossPkgs.callPackage ../nix/build-rust-crate { buildRustCrateBin = null; }) {
+        crateName = "x";
+        version = "0.0.0";
+        src = sampleProject;
+      }).extraRustcOpts
+  );
+in
 pkgs.runCommand "cargo-nix-plugin-sample-build-test"
   {
     nativeBuildInputs = [
@@ -23,6 +39,15 @@ pkgs.runCommand "cargo-nix-plugin-sample-build-test"
   }
   ''
     export HOME=$(mktemp -d)
+
+    ${pkgs.lib.optionalString pkgs.stdenv.hostPlatform.isLinux ''
+      mold_dir=$(sed -n 's/^link-arg=-B//p' ${crossRustcOpts})
+      "$mold_dir/ld.mold" --version | grep -q '^mold' || {
+        echo "FAIL: cross build has no runnable unprefixed ld.mold on -B"
+        exit 1
+      }
+      echo "PASS: cross build gets an unprefixed ld.mold"
+    ''}
 
     cargoNixExpr='
       let
