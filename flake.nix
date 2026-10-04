@@ -122,8 +122,8 @@
           };
 
         }
-        # `nix build --store local?root=…` needs the bind-mount-based
-        # chroot store, which only exists on Linux.
+        # Linux-only, for two reasons: `nix build --store local?root=…` needs
+        # the bind-mount-based chroot store, and mold exists only here.
         // nixpkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
           nextest-run-test = pkgs.callPackage ./tests/nextest-run-test.nix {
             inherit plugin nix;
@@ -146,6 +146,14 @@
             pluginSrc = ./.;
             # nodeps variant: cargo metadata inside the sandbox can't reach
             # crates.io, and the remap logic under test doesn't need it to.
+            sampleProject = ./tests/sample-project-nodeps;
+          };
+
+          cross-mold-linker-test = pkgs.callPackage ./tests/cross-mold-linker-test.nix {
+            inherit plugin nix;
+            pluginSrc = ./.;
+            # nodeps variant: resolves without registry access, and the
+            # linker flags under test don't depend on having dependencies.
             sampleProject = ./tests/sample-project-nodeps;
           };
         };
