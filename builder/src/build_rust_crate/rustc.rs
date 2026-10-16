@@ -83,9 +83,6 @@ fn find_rustc_prefix_on_path() -> Option<String> {
         .and_then(|bin| Some(bin.parent()?.to_string_lossy().into_owned()))
 }
 
-/// Deterministic ThinLTO promoted-local names (the default suffix hashes nondeterministic bitcode).
-pub const STABLE_PROMOTED_NAMES: &str = "llvm-args=-use-source-filename-for-promoted-locals";
-
 /// Base rustc flags: opt level, codegen-units, remap, linker, --target, user opts.
 fn base_rustc_flags(config: &BuildConfig) -> Vec<String> {
     let mut flags = Vec::new();
@@ -98,8 +95,6 @@ fn base_rustc_flags(config: &BuildConfig) -> Vec<String> {
         format!("debuginfo={}", config.debug_info),
         "-C".into(),
         format!("codegen-units={n}", n = config.codegen_units),
-        "-C".into(),
-        STABLE_PROMOTED_NAMES.into(),
     ]);
 
     if let Ok(build_top) = std::env::var("NIX_BUILD_TOP") {

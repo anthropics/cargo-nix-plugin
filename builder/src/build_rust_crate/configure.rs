@@ -210,8 +210,6 @@ pub fn run(config: &mut BuildConfig) -> Result<(), Box<dyn std::error::Error>> {
         cmd.args([
             "-C",
             &format!("codegen-units={n}", n = config.codegen_units),
-            "-C",
-            super::rustc::STABLE_PROMOTED_NAMES,
         ]);
         for o in &config.extra_rustc_opts_for_build_rs {
             cmd.arg(o);
