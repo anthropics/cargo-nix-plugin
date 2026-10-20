@@ -25,6 +25,44 @@
   buildRustCrateBin,
 }:
 
+let
+  # Interpolated into a string rather than listed in nativeBuildInputs, so
+  # splicing does not happen for us: the host-platform mold cannot exec here.
+  moldForBuild = if defaultMold == null then null else defaultMold.__spliced.buildHost or defaultMold;
+  moldTargetPrefix = if moldForBuild == null then "" else moldForBuild.targetPrefix or "";
+
+  # `-fuse-ld=mold` searches for an *unprefixed* `ld.mold`, which the cross
+  # wrapper does not install — gcc then falls through to the unwrapped mold and
+  # the ld-wrapper adding store `-rpath` entries never runs, leaving an empty
+  # RUNPATH that only fails at exec. nixpkgs' `useMoldLinker` fixes the same
+  # thing the same way.
+  moldLinkerDir = pkgsBuildBuild.runCommand "mold-unprefixed-ld" { } ''
+    mkdir -p "$out/bin"
+    wrapped="${moldForBuild}/bin/${moldTargetPrefix}ld.mold"
+    # A dangling link would silently restore that empty RUNPATH, with a green
+    # build. Fail here if the wrapper stops installing this name.
+    if [ ! -x "$wrapped" ]; then
+      echo "buildRustCrate: expected a wrapped mold at $wrapped" >&2
+      exit 1
+    fi
+    ln -s "$wrapped" "$out/bin/ld.mold"
+  '';
+
+  # `-B` is searched ahead of PATH, so it beats the unwrapped mold the wrapper
+  # propagates there. Native links already find an unprefixed `ld.mold` in
+  # mold's own bin, so they add nothing and keep their existing hashes.
+  moldRustcOpts = lib.optionals (defaultMold != null) (
+    [
+      "-C"
+      "link-arg=-fuse-ld=mold"
+    ]
+    ++ lib.optionals (moldTargetPrefix != "") [
+      "-C"
+      "link-arg=-B${moldLinkerDir}/bin/"
+    ]
+  );
+in
+
 crate_:
 lib.makeOverridable
   (
@@ -340,10 +378,7 @@ lib.makeOverridable
             "--edition"
             edition
           ]
-          ++ lib.optionals (defaultMold != null) [
-            "-C"
-            "link-arg=-fuse-ld=mold"
-          ];
+          ++ moldRustcOpts;
         extraRustcOptsForBuildRs =
           lib.optionals (crate ? extraRustcOptsForBuildRs) crate.extraRustcOptsForBuildRs
           ++ extraRustcOptsForBuildRs_
