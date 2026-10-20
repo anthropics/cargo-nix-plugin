@@ -389,6 +389,10 @@ lib.makeOverridable
           runHook preInstall
           build-rust-crate install
           runHook postInstall
+          # After postInstall, not inside `build-rust-crate install`: hooks
+          # still resolve paths through CARGO_MANIFEST_DIR, so the symlink
+          # has to outlive them.
+          rm -f "$out/.cargo-manifest"
         '';
 
         dontStrip = debugInfo > 0;
