@@ -13,17 +13,34 @@
   defaultCrateOverrides,
   fetchCrate,
   pkgsBuildBuild,
+  pkgsBuildHost,
   rustc,
   cargo,
   libiconv,
-  mold ? null,
   # Controls codegen parallelization for all crates.
   defaultCodegenUnits ? 16,
-  # Use mold linker for faster linking (null to disable, Linux only)
-  defaultMold ? if stdenv.hostPlatform.isLinux then mold else null,
+  # Use mold linker for faster linking (null to disable, Linux only).
+  # Not a spliced `mold` arg: interpolating that below gives the host binary.
+  defaultMold ? if stdenv.hostPlatform.isLinux then pkgsBuildHost.mold else null,
   # The build-rust-crate binary that replaces bash phase scripts.
   buildRustCrateBin,
 }:
+
+let
+  # -fuse-ld=mold wants an unprefixed ld.mold; the cross wrapper only ships
+  # <triple>-ld.mold, so gcc would fall back to unwrapped mold (no rpaths).
+  moldPrefix = if lib.isDerivation defaultMold then defaultMold.targetPrefix or "" else "";
+  moldLinkerDir = pkgsBuildBuild.runCommand "mold-ld" { } ''
+    mkdir -p $out/bin
+    ln -s ${defaultMold}/bin/${moldPrefix}ld.mold $out/bin/ld.mold
+  '';
+  moldRustcOpts = lib.optionals (defaultMold != null) [
+    "-C"
+    "link-arg=-fuse-ld=mold"
+    "-C"
+    "link-arg=-B${moldLinkerDir}/bin/"
+  ];
+in
 
 crate_:
 lib.makeOverridable
@@ -340,10 +357,7 @@ lib.makeOverridable
             "--edition"
             edition
           ]
-          ++ lib.optionals (defaultMold != null) [
-            "-C"
-            "link-arg=-fuse-ld=mold"
-          ];
+          ++ moldRustcOpts;
         extraRustcOptsForBuildRs =
           lib.optionals (crate ? extraRustcOptsForBuildRs) crate.extraRustcOptsForBuildRs
           ++ extraRustcOptsForBuildRs_
