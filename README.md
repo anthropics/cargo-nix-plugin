@@ -255,11 +255,12 @@ re-running clippy. The build log still shows the rendered diagnostics; only the
 on-disk report is JSON.
 
 The compatibility `.build` output installs normal artifacts. `.check` and
-`.checkTests` use metadata emission only for terminal bin and test targets;
-dependency libraries, proc macros, and build scripts remain normal reusable
-builds. The selected root library is compiled normally for its terminal targets
-but is not installed in the metadata verdict output. That output retains JSON
-diagnostics and direct dependency references, but no terminal executables.
+`.checkTests` use metadata emission for the selected root library and its
+terminal bin and test targets, which check against the library's `.rmeta`; a
+root proc-macro library is still compiled normally so its tests can load it.
+Dependency libraries, proc macros, and build scripts remain normal reusable
+builds. The metadata verdict output retains JSON diagnostics and direct
+dependency references, but no library or terminal executables.
 
 The report is an output of the clippy build, so it only exists when that build
 succeeds. If you need both the JSON and a failing CI gate, leave `clippyArgs`

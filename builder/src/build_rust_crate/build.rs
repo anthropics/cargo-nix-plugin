@@ -59,6 +59,11 @@ pub fn run(config: &mut BuildConfig) -> Result<(), Box<dyn std::error::Error>> {
 
     let mut lib_extern: Vec<String> = Vec::new();
 
+    // Every consumer of the root lib in metadata mode is itself checked at
+    // metadata, so its rmeta suffices. Proc macros must still be loadable.
+    let metadata_only = config.terminal_artifacts == TerminalArtifacts::Metadata;
+    let lib_metadata_only = metadata_only && !config.crate_type.iter().any(|t| t == "proc-macro");
+
     let lib_src = resolve_lib_path(config);
     if !config.reusable_root_lib.is_empty() && lib_src.is_none() {
         return Err(format!(
@@ -120,7 +125,7 @@ pub fn run(config: &mut BuildConfig) -> Result<(), Box<dyn std::error::Error>> {
                 &extra,
                 false,
                 true,
-                false,
+                lib_metadata_only,
             ),
             config.verbose,
         )?;
@@ -132,8 +137,12 @@ pub fn run(config: &mut BuildConfig) -> Result<(), Box<dyn std::error::Error>> {
             .iter()
             .any(|t| matches!(t.as_str(), "lib" | "rlib" | "dylib" | "proc-macro"));
         if linkable {
-            let lib_artifact = super::rustc::find_by_metadata("target/lib", metadata)
-                .unwrap_or_else(|| format!("target/lib/lib{crate_name}-{metadata}.rlib"));
+            let lib_artifact = if lib_metadata_only {
+                format!("target/lib/lib{crate_name}-{metadata}.rmeta")
+            } else {
+                super::rustc::find_by_metadata("target/lib", metadata)
+                    .unwrap_or_else(|| format!("target/lib/lib{crate_name}-{metadata}.rlib"))
+            };
             lib_extern
                 .extend_from_slice(&["--extern".into(), format!("{crate_name}={lib_artifact}")]);
         }
@@ -149,15 +158,22 @@ pub fn run(config: &mut BuildConfig) -> Result<(), Box<dyn std::error::Error>> {
         if config.crate_type.iter().any(|t| t == "cdylib") {
             extra.extend_from_slice(&flags.bso_cdylib);
         }
+        // In metadata mode this unit writes an rmeta under the lib's own
+        // filename, which would replace the one bins and tests extern.
+        let out_dir = if metadata_only {
+            "target/test-lib"
+        } else {
+            "target/lib"
+        };
         let mut cmd = flags.cmd(
             &crate_name,
             lib_src,
-            "target/lib",
+            out_dir,
             &crate_types,
             &extra,
             true,
             true,
-            config.terminal_artifacts == TerminalArtifacts::Metadata,
+            metadata_only,
         );
         let tmp = fs::canonicalize({
             fs::create_dir_all("target/tmp")?;
