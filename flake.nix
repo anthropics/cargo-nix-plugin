@@ -92,6 +92,12 @@
             sampleProject = ./tests/sample-project;
           };
 
+          metadata-check-test = pkgs.callPackage ./tests/metadata-check-test.nix {
+            inherit plugin nix;
+            pluginSrc = ./.;
+            checkProject = ./tests/check-project;
+          };
+
           offline-build-test = pkgs.callPackage ./tests/offline-build-test.nix {
             inherit plugin nix;
             pluginSrc = ./.;
