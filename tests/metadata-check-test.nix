@@ -2,7 +2,8 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # End-to-end test for clippy `.check` / `.checkTests`, which stop the root
-# library and terminal targets at metadata emission. check-lib's bin and
+# library and terminal targets at metadata emission. check-lib's library
+# fails codegen, so its checks pass only if nothing codegens it; its bin and
 # integration test must resolve against the library's own metadata, the
 # library's lints must still reach the report, a proc-macro root must stay
 # loadable by its integration test, and an rlib+cdylib root must check.
@@ -50,6 +51,15 @@ pkgs.runCommand "cargo-nix-plugin-metadata-check-test"
         echo "PASS: $member.$attr"
       done
     done
+
+    build_drv=$(nix-instantiate \
+      --option plugin-files "${plugin}/lib/nix/plugins" \
+      --expr "($cargoNixExpr).clippy.workspaceMembers.check-lib.build")
+    if nix-store --realize "$build_drv" 2>/dev/null; then
+      echo "FAIL: check-lib.build succeeded, so its library does not need codegen to fail"
+      exit 1
+    fi
+    echo "PASS: check-lib.build fails codegen"
 
     touch $out
   ''
